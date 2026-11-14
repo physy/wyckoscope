@@ -77,6 +77,14 @@ pub(crate) fn setup(
     });
     let shaft_mesh = meshes.add(Cylinder::new(0.065, 0.82).mesh().resolution(32));
     let head_mesh = meshes.add(Cone::new(0.16, 0.38).mesh().resolution(32));
+    let origin_mesh = meshes.add(Sphere::new(0.18).mesh().ico(4).expect("valid icosphere"));
+    let origin_material = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        emissive: LinearRgba::rgb(0.08, 0.08, 0.08),
+        metallic: 0.08,
+        perceptual_roughness: 0.32,
+        ..default()
+    });
     for (index, material) in axis_materials.iter().enumerate() {
         commands
             .spawn((
@@ -100,6 +108,13 @@ pub(crate) fn setup(
                 ));
             });
     }
+    commands.spawn((
+        Name::new("Orientation-axis origin"),
+        Mesh3d(origin_mesh),
+        MeshMaterial3d(origin_material),
+        Transform::default(),
+        RenderLayers::layer(AXIS_RENDER_LAYER),
+    ));
     commands.insert_resource(OrientationAxisMaterials(axis_materials));
     commands.spawn((
         Name::new("3D orientation-axis camera"),
@@ -241,18 +256,18 @@ pub(crate) fn rebuild_scene(
         })
         .collect();
     let supercell = settings.supercell.map(|value| value.max(1));
-    let cell_count = supercell
+    let requested_atoms = source_atoms
         .iter()
-        .fold(1_u64, |total, value| total.saturating_mul(*value as u64));
-    let boundary_atom_count = settings.show_boundary_atoms.then(|| {
-        source_atoms
-            .iter()
-            .map(|atom| boundary_image_count(atom.fractional).saturating_sub(1))
-            .sum::<u64>()
-    });
-    let requested_atoms = cell_count
-        .saturating_mul(source_atoms.len() as u64)
-        .saturating_add(boundary_atom_count.unwrap_or_default());
+        .map(|atom| {
+            if settings.show_boundary_atoms {
+                periodic_image_count(atom.fractional, supercell)
+            } else {
+                supercell
+                    .iter()
+                    .fold(1_u64, |total, value| total.saturating_mul(*value as u64))
+            }
+        })
+        .sum::<u64>();
     if requested_atoms > MAX_RENDER_ATOMS {
         scene_status.warning = Some(format!(
             "Requested supercell contains {requested_atoms} atoms. The previous scene is kept; reduce A × B × C below {MAX_RENDER_ATOMS} displayed atoms."
@@ -319,28 +334,15 @@ pub(crate) fn rebuild_scene(
             occupancy: atom.occupancy,
         });
     };
-    for ix in 0..supercell[0] {
-        for iy in 0..supercell[1] {
-            for iz in 0..supercell[2] {
-                let offset = Vec3::new(ix as f32, iy as f32, iz as f32);
-                for atom in &source_atoms {
-                    append_render_atom(atom, atom.fractional + offset);
-                }
-            }
-        }
-    }
-    // Fractional coordinates are canonicalized to [0, 1), so a site at 0 is
-    // crystallographically identical to one at 1. Draw images only on the
-    // outer high faces: this completes the visible unit cell without drawing
-    // duplicate atoms on each internal supercell boundary.
-    if settings.show_boundary_atoms {
-        for atom in &source_atoms {
-            for offset in boundary_image_offsets(atom.fractional, supercell)
-                .into_iter()
-                .skip(1)
-            {
-                append_render_atom(atom, atom.fractional + offset);
-            }
+    for atom in &source_atoms {
+        let fractional = canonical_fractional(atom.fractional);
+        let offsets = if settings.show_boundary_atoms {
+            periodic_image_offsets(fractional, supercell)
+        } else {
+            interior_cell_offsets(supercell)
+        };
+        for offset in offsets {
+            append_render_atom(atom, fractional + offset);
         }
     }
 
@@ -551,6 +553,9 @@ pub(crate) fn rebuild_scene(
             coordinates: VectorCoordinates::Cartesian,
             color: settings.imported_moment_color,
             scale: settings.imported_moment_scale,
+            shaft_radius: settings.imported_moment_shaft_radius,
+            head_length: settings.imported_moment_head_length,
+            head_radius: settings.imported_moment_head_radius,
             penetrate_atom: false,
             add_atom_radius: true,
         };
@@ -700,32 +705,64 @@ pub(crate) fn rebuild_scene(
     }
 }
 
-/// Number of periodic images of a site needed to close the positive faces of
-/// a displayed cell. The returned count includes the original site.
-pub(crate) fn boundary_image_count(fractional: Vec3) -> u64 {
-    let boundary_axes = [fractional.x, fractional.y, fractional.z]
+/// Number of positions of a site in a supercell, including shared cell-face,
+/// edge and corner images. A site at zero appears at every lattice boundary
+/// along that axis, not only on the global outer corner.
+pub(crate) fn periodic_image_count(fractional: Vec3, supercell: [u32; 3]) -> u64 {
+    let fractional = canonical_fractional(fractional);
+    [fractional.x, fractional.y, fractional.z]
         .into_iter()
-        .filter(|component| component.abs() <= BOUNDARY_EPSILON)
-        .count();
-    1_u64 << boundary_axes
+        .zip(supercell)
+        .map(|(component, cells)| (cells as u64) + u64::from(component.abs() <= BOUNDARY_EPSILON))
+        .product()
 }
 
-fn boundary_image_offsets(fractional: Vec3, supercell: [u32; 3]) -> Vec<Vec3> {
-    let choices = [
-        (fractional.x.abs() <= BOUNDARY_EPSILON).then_some(supercell[0] as f32),
-        (fractional.y.abs() <= BOUNDARY_EPSILON).then_some(supercell[1] as f32),
-        (fractional.z.abs() <= BOUNDARY_EPSILON).then_some(supercell[2] as f32),
-    ];
-    let mut offsets = vec![Vec3::ZERO];
-    for (axis, boundary_offset) in choices.into_iter().enumerate() {
-        let Some(boundary_offset) = boundary_offset else {
-            continue;
-        };
-        let existing = offsets.clone();
-        for offset in existing {
-            let mut image = offset;
-            image[axis] = boundary_offset;
-            offsets.push(image);
+/// Canonicalize a fractional coordinate before comparing it with a periodic
+/// boundary. Symmetry multiplication frequently produces e.g. 0.99999994 for
+/// a site that is mathematically at 1 = 0; without this step its image on the
+/// outer supercell face would be omitted.
+fn canonical_fractional(fractional: Vec3) -> Vec3 {
+    Vec3::new(
+        canonical_fractional_component(fractional.x),
+        canonical_fractional_component(fractional.y),
+        canonical_fractional_component(fractional.z),
+    )
+}
+
+fn canonical_fractional_component(value: f32) -> f32 {
+    let wrapped = value.rem_euclid(1.0);
+    if wrapped <= BOUNDARY_EPSILON || 1.0 - wrapped <= BOUNDARY_EPSILON {
+        0.0
+    } else {
+        wrapped
+    }
+}
+
+fn periodic_image_offsets(fractional: Vec3, supercell: [u32; 3]) -> Vec<Vec3> {
+    let fractional = canonical_fractional(fractional);
+    let ends = [fractional.x, fractional.y, fractional.z]
+        .into_iter()
+        .zip(supercell)
+        .map(|(component, cells)| cells - u32::from(component.abs() > BOUNDARY_EPSILON))
+        .collect::<Vec<_>>();
+    let mut offsets = Vec::new();
+    for ix in 0..=ends[0] {
+        for iy in 0..=ends[1] {
+            for iz in 0..=ends[2] {
+                offsets.push(Vec3::new(ix as f32, iy as f32, iz as f32));
+            }
+        }
+    }
+    offsets
+}
+
+fn interior_cell_offsets(supercell: [u32; 3]) -> Vec<Vec3> {
+    let mut offsets = Vec::new();
+    for ix in 0..supercell[0] {
+        for iy in 0..supercell[1] {
+            for iz in 0..supercell[2] {
+                offsets.push(Vec3::new(ix as f32, iy as f32, iz as f32));
+            }
         }
     }
     offsets
@@ -793,17 +830,21 @@ fn spawn_atom_vector(
         return;
     }
     let direction = vector.normalize();
-    let head_length = (vector_length * 0.26).clamp(0.16, 0.55);
-    let visible_length = vector_length
-        + if style.add_atom_radius {
-            atom_radius
-        } else {
-            0.0
-        };
+    let head_length =
+        ((vector_length * 0.26).clamp(0.16, 0.55) * style.head_length).min(vector_length.max(0.01));
     let (start, tip) = if style.penetrate_atom {
+        // VESTA draws a penetrating arrow symmetrically about the atom centre:
+        // the full arrow is twice the scaled vector modulus. When the atom
+        // radius is added, each exposed half remains vector_length long.
+        let half_length = vector_length
+            + if style.add_atom_radius {
+                atom_radius
+            } else {
+                0.0
+            };
         (
-            origin - direction * visible_length * 0.5,
-            origin + direction * visible_length * 0.5,
+            origin - direction * half_length,
+            origin + direction * half_length,
         )
     } else {
         let start = origin
@@ -815,14 +856,14 @@ fn spawn_atom_vector(
                 };
         (start, start + direction * vector_length)
     };
-    let shaft_end = tip - direction * head_length.min(visible_length * 0.8);
+    let shaft_end = tip - direction * head_length.min(start.distance(tip) * 0.8);
     spawn_cylinder_between(
         commands,
         shaft_mesh,
         material.clone(),
         start,
         shaft_end,
-        0.045,
+        style.shaft_radius,
     );
     let actual_head_length = tip.distance(shaft_end);
     commands.spawn((
@@ -830,7 +871,11 @@ fn spawn_atom_vector(
         MeshMaterial3d(material),
         Transform::from_translation(shaft_end + direction * (actual_head_length * 0.5))
             .with_rotation(Quat::from_rotation_arc(Vec3::Y, direction))
-            .with_scale(Vec3::new(1.0, actual_head_length / 0.42, 1.0)),
+            .with_scale(Vec3::new(
+                style.head_radius,
+                actual_head_length / 0.42,
+                style.head_radius,
+            )),
         CrystalVisual,
     ));
 }
@@ -1128,7 +1173,10 @@ fn cell_edges([a, b, c]: [Vec3; 3]) -> Vec<(Vec3, Vec3)> {
 }
 
 pub(crate) fn crystal_to_world(value: Vec3) -> Vec3 {
-    Vec3::new(value.x, value.z, value.y)
+    // Keep c visually upright (world Y) while preserving the crystallographic
+    // handedness: a × b = c. Swapping Y/Z alone would reflect the structure;
+    // the minus sign maps b toward world -Z and makes this a proper rotation.
+    Vec3::new(value.x, value.z, -value.y)
 }
 
 pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, Vec3); 7] {
@@ -1148,18 +1196,38 @@ pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, V
 
 #[cfg(test)]
 mod tests {
-    use super::{boundary_image_count, boundary_image_offsets};
+    use super::{
+        canonical_fractional, crystal_to_world, periodic_image_count, periodic_image_offsets,
+    };
     use bevy::prelude::Vec3;
 
     #[test]
-    fn closes_each_boundary_face_once() {
-        assert_eq!(boundary_image_count(Vec3::new(0.25, 0.5, 0.75)), 1);
-        assert_eq!(boundary_image_count(Vec3::new(0.0, 0.5, 0.75)), 2);
-        assert_eq!(boundary_image_count(Vec3::new(0.0, 0.0, 0.0)), 8);
+    fn fills_all_shared_boundaries_of_a_supercell() {
+        assert_eq!(
+            periodic_image_count(Vec3::new(0.25, 0.5, 0.75), [2, 2, 1]),
+            4
+        );
+        assert_eq!(periodic_image_count(Vec3::ZERO, [2, 2, 1]), 18);
+        assert_eq!(
+            periodic_image_count(Vec3::new(0.999_999, 0.0, 0.0), [2, 2, 1]),
+            18
+        );
 
-        let offsets = boundary_image_offsets(Vec3::ZERO, [2, 3, 4]);
-        assert_eq!(offsets.len(), 8);
-        assert!(offsets.contains(&Vec3::new(2.0, 0.0, 0.0)));
-        assert!(offsets.contains(&Vec3::new(2.0, 3.0, 4.0)));
+        let offsets = periodic_image_offsets(Vec3::ZERO, [2, 2, 1]);
+        assert_eq!(offsets.len(), 18);
+        assert!(offsets.contains(&Vec3::new(1.0, 1.0, 1.0)));
+        assert!(offsets.contains(&Vec3::new(2.0, 1.0, 1.0)));
+        assert_eq!(
+            canonical_fractional(Vec3::new(0.999_999, 0.0, -0.000_001)),
+            Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn crystal_to_world_preserves_right_handed_axes() {
+        let a = crystal_to_world(Vec3::X);
+        let b = crystal_to_world(Vec3::Y);
+        let c = crystal_to_world(Vec3::Z);
+        assert!(a.cross(b).dot(c) > 0.999);
     }
 }

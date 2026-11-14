@@ -178,6 +178,12 @@ fn apply_imported_visuals(
                     coordinates: VectorCoordinates::Cartesian,
                     color: vector.color,
                     scale: vector.scale,
+                    // `VECTT`'s size is a VESTA display parameter, not a
+                    // calibrated world-space radius. Preserve Wyckoscope's
+                    // readable vector geometry instead of treating it as Å.
+                    shaft_radius: 0.180,
+                    head_length: 1.0,
+                    head_radius: 2.5,
                     penetrate_atom: vector.penetrate_atom,
                     add_atom_radius: vector.add_atom_radius,
                 })

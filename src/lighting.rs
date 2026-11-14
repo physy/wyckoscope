@@ -10,6 +10,14 @@ pub(crate) fn sync_environment(
         (&Transform, &OrbitCamera, &mut Exposure, &mut Tonemapping),
         (With<OrbitCamera>, Without<ExportCamera>, Without<LightRole>),
     >,
+    axis_camera: Single<
+        &Transform,
+        (
+            With<OrientationAxisCamera>,
+            Without<OrbitCamera>,
+            Without<LightRole>,
+        ),
+    >,
     mut ambient: ResMut<AmbientLight>,
     mut lights: Query<
         (
@@ -136,7 +144,11 @@ pub(crate) fn sync_environment(
                 } else {
                     Visibility::Hidden
                 };
-                transform.rotation = rotation_from_degrees(lighting.axis_key_rotation);
+                // The axis camera follows the main camera. Compose its rotation with
+                // the user offset so the illumination remains fixed in screen space
+                // while the crystal axes rotate underneath it.
+                transform.rotation =
+                    axis_camera.rotation * rotation_from_degrees(lighting.axis_key_rotation);
                 if let Some(mut light) = directional {
                     light.color = color_from_rgb(lighting.axis_key_color);
                     light.illuminance = lighting.axis_key_illuminance;
@@ -148,7 +160,8 @@ pub(crate) fn sync_environment(
                 } else {
                     Visibility::Hidden
                 };
-                transform.rotation = rotation_from_degrees(lighting.axis_fill_rotation);
+                transform.rotation =
+                    axis_camera.rotation * rotation_from_degrees(lighting.axis_fill_rotation);
                 if let Some(mut light) = directional {
                     light.color = color_from_rgb(lighting.axis_fill_color);
                     light.illuminance = lighting.axis_fill_illuminance;

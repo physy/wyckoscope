@@ -157,7 +157,7 @@ pub(crate) fn orbit_camera(
             orbit.arcball_anchor = None;
         }
         if mouse_scroll.delta.y.abs() > f32::EPSILON {
-            orbit.radius *= (-mouse_scroll.delta.y * 0.06).exp();
+            orbit.radius *= (-mouse_scroll.delta.y * 0.003).exp();
             orbit.radius = orbit.radius.clamp(1.5, 900.0);
         }
     }
