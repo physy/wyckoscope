@@ -322,18 +322,6 @@ pub(crate) fn rebuild_scene(
         + structure.cell.vectors[2] * supercell[2] as f32;
     let center = crystal_to_world(total_vector * 0.5);
     let mut render_atoms = Vec::with_capacity(requested_atoms as usize);
-    let mut append_render_atom = |atom: &AtomSite, fractional: Vec3| {
-        let position = structure.cell.fractional_to_cartesian(fractional);
-        render_atoms.push(RenderAtom {
-            position: crystal_to_world(position) - center,
-            element: atom.element.clone(),
-            label: atom.label.clone(),
-            fractional,
-            symmetry_rotation: atom.symmetry_rotation,
-            symmetry_time_reversal: atom.symmetry_time_reversal,
-            occupancy: atom.occupancy,
-        });
-    };
     for atom in &source_atoms {
         let fractional = canonical_fractional(atom.fractional);
         let offsets = if settings.show_boundary_atoms {
@@ -342,9 +330,15 @@ pub(crate) fn rebuild_scene(
             interior_cell_offsets(supercell)
         };
         for offset in offsets {
-            append_render_atom(atom, fractional + offset);
+            render_atoms.push(make_render_atom(
+                atom,
+                fractional + offset,
+                &structure.cell,
+                center,
+            ));
         }
     }
+    let inside_atom_count = render_atoms.len();
 
     selection
         .atoms
@@ -414,11 +408,92 @@ pub(crate) fn rebuild_scene(
         }
     }
 
+    if settings
+        .bond_rules
+        .iter()
+        .any(|rule| rule.enabled && rule.boundary_mode == BondBoundaryMode::SearchAdditionalForA1)
+    {
+        for atom in &source_atoms {
+            let fractional = canonical_fractional(atom.fractional);
+            for ix in -1..=supercell[0] as i32 {
+                for iy in -1..=supercell[1] as i32 {
+                    for iz in -1..=supercell[2] as i32 {
+                        let candidate = fractional + Vec3::new(ix as f32, iy as f32, iz as f32);
+                        let outside = candidate.x < 0.0
+                            || candidate.y < 0.0
+                            || candidate.z < 0.0
+                            || candidate.x > supercell[0] as f32
+                            || candidate.y > supercell[1] as f32
+                            || candidate.z > supercell[2] as f32;
+                        if outside {
+                            render_atoms.push(make_render_atom(
+                                atom,
+                                candidate,
+                                &structure.cell,
+                                center,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let bonds = find_bonds(&render_atoms, &settings);
-    if settings.show_bonds && settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
+    let external_bond_atoms: HashSet<_> = bonds
+        .iter()
+        .filter(|&&(first, second)| {
+            bond_is_displayed(&render_atoms[first], &render_atoms[second], &settings)
+                || bond_supports_polyhedron(&render_atoms[first], &render_atoms[second], &settings)
+        })
+        .flat_map(|&(first, second)| [first, second])
+        .filter(|&index| index >= inside_atom_count)
+        .collect();
+    for &index in &external_bond_atoms {
+        let atom = &render_atoms[index];
+        let style = resolved_style(&atom.element, &overrides);
+        let material = atom_materials[&atom.element].clone();
+        let mut radius =
+            style.display_radius * settings.atom_scale * atom.occupancy.max(0.15).cbrt();
+        if settings.atom_display_mode == AtomDisplayMode::SpaceFilling {
+            radius *= 1.55;
+        }
+        if settings.show_outlines && settings.atom_display_mode != AtomDisplayMode::Wireframe {
+            commands.spawn((
+                Mesh3d(sphere_mesh.clone()),
+                MeshMaterial3d(outline_material.clone()),
+                Transform::from_translation(atom.position).with_scale(Vec3::splat(radius * 1.025)),
+                CrystalVisual,
+            ));
+        }
+        let mut entity = commands.spawn((
+            Name::new(format!("{} {}", atom.element, atom.label)),
+            Mesh3d(sphere_mesh.clone()),
+            MeshMaterial3d(
+                if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+                    wireframe_fill_material.clone()
+                } else {
+                    material
+                },
+            ),
+            Transform::from_translation(atom.position).with_scale(Vec3::splat(radius)),
+            AtomPickable {
+                atom: atom.clone(),
+                radius,
+            },
+            CrystalVisual,
+        ));
+        if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+            entity.insert((Wireframe, WireframeColor { color: style.color }));
+        }
+    }
+    if settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
         for &(a, b) in &bonds {
             let first = &render_atoms[a];
             let second = &render_atoms[b];
+            if !bond_is_displayed(first, second, &settings) {
+                continue;
+            }
             let midpoint = (first.position + second.position) * 0.5;
             spawn_cylinder_between(
                 &mut commands,
@@ -439,45 +514,6 @@ pub(crate) fn rebuild_scene(
         }
     }
 
-    if settings.show_polyhedra
-        && let Some(center) = selection.atoms.first()
-        && let Some(center_index) = render_atoms.iter().position(|atom| center.matches(atom))
-    {
-        let neighbors: Vec<_> = bonds
-            .iter()
-            .filter_map(|&(a, b)| {
-                if a == center_index {
-                    Some(render_atoms[b].position)
-                } else if b == center_index {
-                    Some(render_atoms[a].position)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if let Some(mesh) = coordination_polyhedron_mesh(&neighbors) {
-            let material = materials.add(StandardMaterial {
-                base_color: Color::srgba(
-                    settings.polyhedron_color[0] as f32 / 255.0,
-                    settings.polyhedron_color[1] as f32 / 255.0,
-                    settings.polyhedron_color[2] as f32 / 255.0,
-                    settings.polyhedron_opacity,
-                ),
-                alpha_mode: AlphaMode::Blend,
-                metallic: 0.08,
-                perceptual_roughness: 0.28,
-                cull_mode: None,
-                ..default()
-            });
-            commands.spawn((
-                Name::new(format!("Coordination polyhedron for {}", center.label)),
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material),
-                CrystalVisual,
-            ));
-        }
-    }
-
     if settings
         .bond_rules
         .iter()
@@ -489,6 +525,24 @@ pub(crate) fn rebuild_scene(
             adjacency[second].push(first);
         }
         let polyhedron_material = materials.add(polyhedron_material(&settings));
+        let edge_material = settings.polyhedron_show_edges.then(|| {
+            materials.add(StandardMaterial {
+                base_color: Color::srgb_u8(
+                    settings.polyhedron_edge_color[0],
+                    settings.polyhedron_edge_color[1],
+                    settings.polyhedron_edge_color[2],
+                ),
+                emissive: Color::srgb_u8(
+                    settings.polyhedron_edge_color[0],
+                    settings.polyhedron_edge_color[1],
+                    settings.polyhedron_edge_color[2],
+                )
+                .to_linear()
+                    * 0.08,
+                unlit: true,
+                ..default()
+            })
+        });
         for (rule_index, rule) in settings.bond_rules.iter().enumerate() {
             if !rule.enabled || !rule.show_polyhedra {
                 continue;
@@ -510,17 +564,29 @@ pub(crate) fn rebuild_scene(
                     })
                     .map(|neighbor_index| render_atoms[neighbor_index].position)
                     .collect();
-                if let Some(mesh) = coordination_polyhedron_mesh(&neighbors) {
+                if let Some(polyhedron) = coordination_polyhedron(&neighbors) {
                     commands.spawn((
                         Name::new(format!(
                             "Coordination polyhedron {} for {}",
                             rule_index + 1,
                             center_atom.label
                         )),
-                        Mesh3d(meshes.add(mesh)),
+                        Mesh3d(meshes.add(polyhedron.mesh)),
                         MeshMaterial3d(polyhedron_material.clone()),
                         CrystalVisual,
                     ));
+                    if let Some(edge_material) = &edge_material {
+                        for (start, end) in polyhedron.edges {
+                            spawn_cylinder_between(
+                                &mut commands,
+                                cylinder_mesh.clone(),
+                                edge_material.clone(),
+                                start,
+                                end,
+                                settings.polyhedron_edge_radius,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -549,10 +615,10 @@ pub(crate) fn rebuild_scene(
             perceptual_roughness: 0.24,
             ..default()
         });
-        for atom in render_atoms
-            .iter()
-            .filter(|atom| vector_matches_atom(&vector.target, atom))
-        {
+        for (_, atom) in render_atoms.iter().enumerate().filter(|(index, atom)| {
+            (*index < inside_atom_count || external_bond_atoms.contains(index))
+                && vector_matches_atom(&vector.target, atom)
+        }) {
             let direction = resolved_vector_direction(vector, atom, &structure.cell);
             let radius = resolved_style(&atom.element, &overrides).display_radius
                 * settings.atom_scale
@@ -751,6 +817,24 @@ fn polyhedron_material(settings: &VisualSettings) -> StandardMaterial {
     }
 }
 
+fn make_render_atom(
+    atom: &AtomSite,
+    fractional: Vec3,
+    cell: &UnitCell,
+    center: Vec3,
+) -> RenderAtom {
+    let position = cell.fractional_to_cartesian(fractional);
+    RenderAtom {
+        position: crystal_to_world(position) - center,
+        element: atom.element.clone(),
+        label: atom.label.clone(),
+        fractional,
+        symmetry_rotation: atom.symmetry_rotation,
+        symmetry_time_reversal: atom.symmetry_time_reversal,
+        occupancy: atom.occupancy,
+    }
+}
+
 fn vector_matches_atom(target: &VectorTarget, atom: &RenderAtom) -> bool {
     match target {
         VectorTarget::Site { label, .. } => atom.label == *label,
@@ -867,7 +951,12 @@ pub(crate) struct AtomPickable {
     pub(crate) radius: f32,
 }
 
-fn coordination_polyhedron_mesh(neighbors: &[Vec3]) -> Option<Mesh> {
+struct PolyhedronGeometry {
+    mesh: Mesh,
+    edges: Vec<(Vec3, Vec3)>,
+}
+
+fn coordination_polyhedron(neighbors: &[Vec3]) -> Option<PolyhedronGeometry> {
     if neighbors.len() < 4 || neighbors.len() > 24 {
         return None;
     }
@@ -875,6 +964,7 @@ fn coordination_polyhedron_mesh(neighbors: &[Vec3]) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
+    let mut edge_indices = HashSet::new();
     let epsilon = 1.0e-4;
 
     for first in 0..neighbors.len() {
@@ -912,21 +1002,28 @@ fn coordination_polyhedron_mesh(neighbors: &[Vec3]) -> Option<Mesh> {
                 positions.extend([a.to_array(), b.to_array(), c.to_array()]);
                 normals.extend([normal.to_array(); 3]);
                 indices.extend([base, base + 1, base + 2]);
+                for (start, end) in [(first, second), (second, third), (third, first)] {
+                    edge_indices.insert((start.min(end), start.max(end)));
+                }
             }
         }
     }
     if indices.is_empty() {
         return None;
     }
-    Some(
-        Mesh::new(
+    Some(PolyhedronGeometry {
+        mesh: Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         )
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_indices(Indices::U32(indices)),
-    )
+        edges: edge_indices
+            .into_iter()
+            .map(|(start, end)| (neighbors[start], neighbors[end]))
+            .collect(),
+    })
 }
 
 fn resolved_style(symbol: &str, overrides: &ElementOverrides) -> ElementStyle {
@@ -1049,17 +1146,11 @@ pub(crate) fn atoms_are_bonded(
     second: &RenderAtom,
     settings: &VisualSettings,
 ) -> bool {
-    if settings.bond_rules.is_empty() {
-        let covalent = elements::style(&first.element).covalent_radius
-            + elements::style(&second.element).covalent_radius;
-        let cutoff = (covalent * 1.16).min(settings.bond_cutoff);
-        let distance = first.position.distance(second.position);
-        return distance > 0.35 && distance <= cutoff;
-    }
+    let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
     settings.bond_rules.iter().any(|rule| {
         rule.enabled
-            && (rule_matches_directed(first, second, rule, settings.bond_match_mode)
-                || rule_matches_directed(second, first, rule, settings.bond_match_mode))
+            && (rule_matches_with_boundary(first, second, rule, settings, supercell)
+                || rule_matches_with_boundary(second, first, rule, settings, supercell))
     })
 }
 
@@ -1070,10 +1161,13 @@ pub(crate) fn rule_matches_directed(
     match_mode: BondMatchMode,
 ) -> bool {
     atom_matches(&rule.center, center, match_mode)
-        && atom_matches(&rule.neighbor, neighbor, match_mode)
         && center.position.distance(neighbor.position) > 1.0e-4
         && center.position.distance(neighbor.position) >= rule.min_length.max(0.0)
         && center.position.distance(neighbor.position) <= rule.max_length.max(0.0)
+        && match rule.search_mode {
+            BondSearchMode::A2BondedToA1 => atom_matches(&rule.neighbor, neighbor, match_mode),
+            BondSearchMode::AtomsBondedToA1 => true,
+        }
 }
 
 fn atom_matches(target: &str, atom: &RenderAtom, match_mode: BondMatchMode) -> bool {
@@ -1089,7 +1183,7 @@ fn atom_matches(target: &str, atom: &RenderAtom, match_mode: BondMatchMode) -> b
 }
 
 fn find_bonds(atoms: &[RenderAtom], settings: &VisualSettings) -> Vec<(usize, usize)> {
-    if atoms.len() < 2 {
+    if atoms.len() < 2 || !settings.bond_rules.iter().any(|rule| rule.enabled) {
         return Vec::new();
     }
     let maximum_cutoff = settings
@@ -1097,7 +1191,7 @@ fn find_bonds(atoms: &[RenderAtom], settings: &VisualSettings) -> Vec<(usize, us
         .iter()
         .filter(|rule| rule.enabled)
         .map(|rule| rule.max_length)
-        .fold(settings.bond_cutoff, f32::max);
+        .fold(0.5, f32::max);
     let bucket_size = maximum_cutoff.max(0.5);
     let key = |p: Vec3| {
         (
@@ -1111,6 +1205,7 @@ fn find_bonds(atoms: &[RenderAtom], settings: &VisualSettings) -> Vec<(usize, us
         buckets.entry(key(atom.position)).or_default().push(index);
     }
     let mut bonds = HashSet::new();
+    let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
     for (index, atom) in atoms.iter().enumerate() {
         let (bx, by, bz) = key(atom.position);
         for dx in -1..=1 {
@@ -1122,7 +1217,14 @@ fn find_bonds(atoms: &[RenderAtom], settings: &VisualSettings) -> Vec<(usize, us
                                 continue;
                             }
                             let other = &atoms[other_index];
-                            if atoms_are_bonded(atom, other, settings) {
+                            if settings.bond_rules.iter().any(|rule| {
+                                rule.enabled
+                                    && (rule_matches_with_boundary(
+                                        atom, other, rule, settings, supercell,
+                                    ) || rule_matches_with_boundary(
+                                        other, atom, rule, settings, supercell,
+                                    ))
+                            }) {
                                 bonds.insert((index, other_index));
                             }
                         }
@@ -1134,6 +1236,61 @@ fn find_bonds(atoms: &[RenderAtom], settings: &VisualSettings) -> Vec<(usize, us
     let mut result: Vec<_> = bonds.into_iter().collect();
     result.sort_unstable();
     result
+}
+
+fn rule_matches_with_boundary(
+    center: &RenderAtom,
+    neighbor: &RenderAtom,
+    rule: &BondRule,
+    settings: &VisualSettings,
+    supercell: [f32; 3],
+) -> bool {
+    rule_matches_directed(center, neighbor, rule, settings.bond_match_mode)
+        && match rule.boundary_mode {
+            BondBoundaryMode::DoNotSearchBeyond => {
+                atom_is_inside_supercell(center, supercell)
+                    && atom_is_inside_supercell(neighbor, supercell)
+            }
+            BondBoundaryMode::SearchAdditionalForA1 => atom_is_inside_supercell(center, supercell),
+        }
+}
+
+fn bond_is_displayed(first: &RenderAtom, second: &RenderAtom, settings: &VisualSettings) -> bool {
+    let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
+    settings.bond_rules.iter().any(|rule| {
+        rule.enabled
+            && rule.show_bonds
+            && (rule_matches_with_boundary(first, second, rule, settings, supercell)
+                || rule_matches_with_boundary(second, first, rule, settings, supercell))
+    })
+}
+
+fn bond_supports_polyhedron(
+    first: &RenderAtom,
+    second: &RenderAtom,
+    settings: &VisualSettings,
+) -> bool {
+    let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
+    settings.bond_rules.iter().any(|rule| {
+        rule.enabled
+            && rule.show_polyhedra
+            && (rule_matches_with_boundary(first, second, rule, settings, supercell)
+                || rule_matches_with_boundary(second, first, rule, settings, supercell))
+    })
+}
+
+fn atom_is_inside_supercell(atom: &RenderAtom, supercell: [f32; 3]) -> bool {
+    const EPSILON: f32 = 1.0e-4;
+    let fractional = atom.fractional;
+    fractional.x >= -EPSILON
+        && fractional.y >= -EPSILON
+        && fractional.z >= -EPSILON
+        // The drawing boundary is closed: a periodic copy exactly on an
+        // outer cell face is a valid A1 center. Only images strictly beyond
+        // that face are additional A2 candidates.
+        && fractional.x <= supercell[0] + EPSILON
+        && fractional.y <= supercell[1] + EPSILON
+        && fractional.z <= supercell[2] + EPSILON
 }
 
 fn cell_edges([a, b, c]: [Vec3; 3]) -> Vec<(Vec3, Vec3)> {

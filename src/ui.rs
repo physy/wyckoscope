@@ -92,6 +92,7 @@ pub(crate) fn interface(
                     InspectorTab::Vectors => {
                         ui_vectors_tab(ui, &mut settings, &selection, &mut dirty)
                     }
+                    InspectorTab::Bonds => ui_bonds_tab(ui, &state, &mut settings, &mut dirty),
                     InspectorTab::View => {
                         let (orbit, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
@@ -268,9 +269,10 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
             tab_button(ui, active, InspectorTab::Structure, "Structure");
             tab_button(ui, active, InspectorTab::Vectors, "Vectors");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::Bonds, "Bonds");
             tab_button(ui, active, InspectorTab::View, "View");
-            tab_button(ui, active, InspectorTab::Elements, "Elements");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::Elements, "Elements");
             tab_button(ui, active, InspectorTab::Export, "Export");
             ui.end_row();
         });
@@ -772,6 +774,83 @@ fn ui_vectors_tab(
     });
 }
 
+fn ui_bonds_tab(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    settings: &mut VisualSettings,
+    dirty: &mut SceneDirty,
+) {
+    section(ui, "BOND DISPLAY", |ui| {
+        if labeled_slider(ui, "Bond radius", &mut settings.bond_radius, 0.025..=0.24) {
+            dirty.mark(false);
+        }
+        ui.label(
+            egui::RichText::new("Bonds are drawn only for enabled bond rules.")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
+    });
+
+    let bond_targets = bond_targets(state, settings.bond_match_mode);
+    ui_bond_rule_controls(ui, settings, dirty, &bond_targets);
+
+    section(ui, "POLYHEDRA", |ui| {
+        let rule_polyhedra = settings
+            .bond_rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.show_polyhedra)
+            .count();
+        if rule_polyhedra > 0 {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{rule_polyhedra} bond rule(s) also generate polyhedra with A1 as the center."
+                ))
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+            );
+        }
+        if rule_polyhedra > 0 {
+            ui.horizontal(|ui| {
+                ui.label("Color");
+                if ui
+                    .color_edit_button_srgb(&mut settings.polyhedron_color)
+                    .changed()
+                {
+                    dirty.mark(false);
+                }
+            });
+            if labeled_slider(ui, "Opacity", &mut settings.polyhedron_opacity, 0.05..=0.85) {
+                dirty.mark(false);
+            }
+            if ui
+                .checkbox(&mut settings.polyhedron_show_edges, "Show edges")
+                .changed()
+            {
+                dirty.mark(false);
+            }
+            if settings.polyhedron_show_edges {
+                if labeled_slider(
+                    ui,
+                    "Edge radius",
+                    &mut settings.polyhedron_edge_radius,
+                    0.005..=0.12,
+                ) {
+                    dirty.mark(false);
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Edge color");
+                    if ui
+                        .color_edit_button_srgb(&mut settings.polyhedron_edge_color)
+                        .changed()
+                    {
+                        dirty.mark(false);
+                    }
+                });
+            }
+        }
+    });
+}
+
 fn ui_view_tab(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -884,18 +963,6 @@ fn ui_view_tab(
         if labeled_slider(ui, "Global atom scale", &mut settings.atom_scale, 0.4..=2.0) {
             dirty.mark(false);
         }
-        if labeled_slider(ui, "Bond width", &mut settings.bond_radius, 0.025..=0.24) {
-            dirty.mark(false);
-        }
-        if labeled_slider(
-            ui,
-            "Default bond cutoff",
-            &mut settings.bond_cutoff,
-            1.0..=5.0,
-        ) {
-            dirty.mark(false);
-        }
-        ui_bond_rule_controls(ui, settings, dirty);
         ui.horizontal(|ui| {
             ui.label("Atoms");
             egui::ComboBox::from_id_salt("atom_display_mode")
@@ -915,34 +982,6 @@ fn ui_view_tab(
                     }
                 });
         });
-        if ui
-            .checkbox(
-                &mut settings.show_polyhedra,
-                "Coordination polyhedron for selected atom",
-            )
-            .changed()
-        {
-            dirty.mark(false);
-        }
-        if settings.show_polyhedra {
-            ui.horizontal(|ui| {
-                ui.label("Polyhedron color");
-                if ui
-                    .color_edit_button_srgb(&mut settings.polyhedron_color)
-                    .changed()
-                {
-                    dirty.mark(false);
-                }
-            });
-            if labeled_slider(
-                ui,
-                "Polyhedron opacity",
-                &mut settings.polyhedron_opacity,
-                0.05..=0.85,
-            ) {
-                dirty.mark(false);
-            }
-        }
         ui_unit_cell_controls(ui, settings, dirty);
         ui.horizontal(|ui| {
             ui.label("Ground color");
@@ -957,11 +996,6 @@ fn ui_view_tab(
             .num_columns(2)
             .spacing([18.0, 8.0])
             .show(ui, |ui| {
-                if ui.checkbox(&mut settings.show_bonds, "Bonds").changed() {
-                    dirty.mark(false);
-                }
-                ui.label("");
-                ui.end_row();
                 if ui
                     .checkbox(&mut settings.show_outlines, "Outlines")
                     .changed()
@@ -1041,8 +1075,50 @@ fn ui_unit_cell_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty
     });
 }
 
-fn ui_bond_rule_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty: &mut SceneDirty) {
-    section(ui, "BOND RULES & POLYHEDRA", |ui| {
+fn bond_targets(state: &AppState, mode: BondMatchMode) -> Vec<String> {
+    let mut targets: Vec<_> = state
+        .structure
+        .asymmetric_atoms
+        .iter()
+        .map(|atom| match mode {
+            BondMatchMode::Element => atom.element.clone(),
+            BondMatchMode::SiteLabel => atom.label.clone(),
+        })
+        .collect();
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn bond_target_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    value: &mut String,
+    targets: &[String],
+) -> bool {
+    let selected = if value.is_empty() {
+        "Select…".to_string()
+    } else {
+        value.clone()
+    };
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for target in targets {
+                changed |= ui.selectable_value(value, target.clone(), target).changed();
+            }
+        });
+    changed
+}
+
+fn ui_bond_rule_controls(
+    ui: &mut egui::Ui,
+    settings: &mut VisualSettings,
+    dirty: &mut SceneDirty,
+    targets: &[String],
+) {
+    section(ui, "BOND RULES", |ui| {
         ui.horizontal(|ui| {
             ui.label("Match by");
             for mode in [BondMatchMode::Element, BondMatchMode::SiteLabel] {
@@ -1055,14 +1131,17 @@ fn ui_bond_rule_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty
             }
         });
         ui.label(
-        egui::RichText::new(
-            "Rules override automatic bond detection. Use * or Any to match every element/site.",
-        )
-        .size(11.0)
-        .color(TEXT_SECONDARY),
-    );
+            egui::RichText::new("Each rule defines an A1 center, A2 neighbor, and distance range.")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
         if ui.button("Add bond rule").clicked() {
-            settings.bond_rules.push(BondRule::default());
+            let target = targets.first().cloned().unwrap_or_default();
+            settings.bond_rules.push(BondRule {
+                center: target.clone(),
+                neighbor: target,
+                ..default()
+            });
             dirty.mark(false);
         }
         let mut remove = None;
@@ -1078,24 +1157,73 @@ fn ui_bond_rule_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty
                         if ui.checkbox(&mut rule.enabled, "Enabled").changed() {
                             dirty.mark(false);
                         }
+                        if ui.checkbox(&mut rule.show_bonds, "Show bonds").changed() {
+                            dirty.mark(false);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Remove").clicked() {
                                 remove = Some(index);
                             }
                         });
                     });
+                    ui.label(
+                        egui::RichText::new("Search mode")
+                            .size(11.0)
+                            .color(TEXT_SECONDARY),
+                    );
+                    for mode in [
+                        BondSearchMode::A2BondedToA1,
+                        BondSearchMode::AtomsBondedToA1,
+                    ] {
+                        if ui
+                            .radio_value(&mut rule.search_mode, mode, mode.label())
+                            .changed()
+                        {
+                            dirty.mark(false);
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new("Boundary mode")
+                            .size(11.0)
+                            .color(TEXT_SECONDARY),
+                    );
+                    for mode in [
+                        BondBoundaryMode::DoNotSearchBeyond,
+                        BondBoundaryMode::SearchAdditionalForA1,
+                    ] {
+                        if ui
+                            .radio_value(&mut rule.boundary_mode, mode, mode.label())
+                            .changed()
+                        {
+                            dirty.mark(false);
+                        }
+                    }
                     egui::Grid::new(egui::Id::new(("bond_rule", index)))
                         .num_columns(2)
                         .spacing([8.0, 6.0])
                         .show(ui, |ui| {
                             ui.label("Center A1");
-                            if ui.text_edit_singleline(&mut rule.center).changed() {
+                            if bond_target_combo(
+                                ui,
+                                ("bond_center", index),
+                                &mut rule.center,
+                                targets,
+                            ) {
                                 dirty.mark(false);
                             }
                             ui.end_row();
                             ui.label("Neighbor A2");
-                            if ui.text_edit_singleline(&mut rule.neighbor).changed() {
-                                dirty.mark(false);
+                            if rule.search_mode == BondSearchMode::A2BondedToA1 {
+                                if bond_target_combo(
+                                    ui,
+                                    ("bond_neighbor", index),
+                                    &mut rule.neighbor,
+                                    targets,
+                                ) {
+                                    dirty.mark(false);
+                                }
+                            } else {
+                                ui.label("Any atom");
                             }
                             ui.end_row();
                             ui.label("Min (Å)");
@@ -1128,24 +1256,9 @@ fn ui_bond_rule_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty
                 });
             ui.add_space(7.0);
         }
-        if settings.bond_rules.iter().any(|rule| rule.show_polyhedra) {
-            ui.horizontal(|ui| {
-                ui.label("Polyhedron color");
-                if ui
-                    .color_edit_button_srgb(&mut settings.polyhedron_color)
-                    .changed()
-                {
-                    dirty.mark(false);
-                }
-            });
-            if labeled_slider(
-                ui,
-                "Polyhedron opacity",
-                &mut settings.polyhedron_opacity,
-                0.05..=0.85,
-            ) {
-                dirty.mark(false);
-            }
+        if let Some(index) = remove {
+            settings.bond_rules.remove(index);
+            dirty.mark(false);
         }
     });
 }

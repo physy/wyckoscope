@@ -165,6 +165,9 @@ fn apply_imported_visuals(
             .iter()
             .map(|rule| BondRule {
                 enabled: true,
+                show_bonds: true,
+                search_mode: BondSearchMode::A2BondedToA1,
+                boundary_mode: BondBoundaryMode::SearchAdditionalForA1,
                 center: rule.center.clone(),
                 neighbor: rule.neighbor.clone(),
                 min_length: rule.min_length,

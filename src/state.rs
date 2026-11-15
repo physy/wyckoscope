@@ -19,6 +19,7 @@ pub(crate) struct AppState {
 pub(crate) enum InspectorTab {
     Structure,
     Vectors,
+    Bonds,
     View,
     Elements,
     Export,
@@ -46,9 +47,44 @@ impl BondMatchMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BondSearchMode {
+    A2BondedToA1,
+    AtomsBondedToA1,
+}
+
+impl BondSearchMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::A2BondedToA1 => "Search A2 bonded to A1",
+            Self::AtomsBondedToA1 => "Search atoms bonded to A1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BondBoundaryMode {
+    DoNotSearchBeyond,
+    SearchAdditionalForA1,
+}
+
+impl BondBoundaryMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::DoNotSearchBeyond => "Do not search atoms beyond the boundary",
+            Self::SearchAdditionalForA1 => {
+                "Search additional atoms if A1 is included in the boundary"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct BondRule {
     pub(crate) enabled: bool,
+    pub(crate) show_bonds: bool,
+    pub(crate) search_mode: BondSearchMode,
+    pub(crate) boundary_mode: BondBoundaryMode,
     pub(crate) center: String,
     pub(crate) neighbor: String,
     pub(crate) min_length: f32,
@@ -60,6 +96,9 @@ impl Default for BondRule {
     fn default() -> Self {
         Self {
             enabled: true,
+            show_bonds: true,
+            search_mode: BondSearchMode::A2BondedToA1,
+            boundary_mode: BondBoundaryMode::SearchAdditionalForA1,
             center: String::new(),
             neighbor: String::new(),
             min_length: 0.0,
@@ -435,14 +474,14 @@ pub(crate) struct VisualSettings {
     pub(crate) show_boundary_atoms: bool,
     pub(crate) atom_scale: f32,
     pub(crate) bond_radius: f32,
-    pub(crate) bond_cutoff: f32,
-    pub(crate) show_bonds: bool,
     pub(crate) bond_match_mode: BondMatchMode,
     pub(crate) bond_rules: Vec<BondRule>,
     pub(crate) atom_display_mode: AtomDisplayMode,
-    pub(crate) show_polyhedra: bool,
     pub(crate) polyhedron_color: [u8; 3],
     pub(crate) polyhedron_opacity: f32,
+    pub(crate) polyhedron_show_edges: bool,
+    pub(crate) polyhedron_edge_radius: f32,
+    pub(crate) polyhedron_edge_color: [u8; 3],
     pub(crate) vectors: VectorSettings,
     pub(crate) unit_cell_display: UnitCellDisplay,
     pub(crate) unit_cell_line_style: CellLineStyle,
@@ -472,14 +511,14 @@ impl Default for VisualSettings {
             show_boundary_atoms: true,
             atom_scale: 0.8,
             bond_radius: 0.095,
-            bond_cutoff: 2.35,
-            show_bonds: false,
             bond_match_mode: BondMatchMode::Element,
             bond_rules: Vec::new(),
             atom_display_mode: AtomDisplayMode::BallAndStick,
-            show_polyhedra: false,
             polyhedron_color: [74, 164, 255],
-            polyhedron_opacity: 0.30,
+            polyhedron_opacity: 0.50,
+            polyhedron_show_edges: true,
+            polyhedron_edge_radius: 0.015,
+            polyhedron_edge_color: [255, 255, 255],
             vectors: VectorSettings::default(),
             unit_cell_display: UnitCellDisplay::All,
             unit_cell_line_style: CellLineStyle::Solid,
