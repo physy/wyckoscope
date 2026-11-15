@@ -123,6 +123,31 @@ pub(crate) fn sync_environment(
                         .to_radians();
                 }
             }
+            LightRole::KeyDirectional => {
+                *visibility =
+                    if lighting.key_enabled && lighting.key_kind == KeyLightKind::Directional {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                *transform = match lighting.key_mode {
+                    LightMode::Camera => {
+                        // A directional light has no meaningful source position. Reuse the
+                        // camera-relative direction while keeping the transform near the target.
+                        Transform::from_translation(key_position).looking_at(key_target, Vec3::Y)
+                    }
+                    LightMode::World => Transform::from_rotation(rotation_from_degrees(
+                        lighting.key_directional_rotation,
+                    )),
+                };
+                if let Some(mut light) = directional {
+                    light.color = color_from_rgb(lighting.key_color);
+                    light.illuminance = lighting.key_directional_illuminance;
+                    light.shadows_enabled = lighting.key_shadows;
+                    light.shadow_depth_bias = lighting.key_shadow_depth_bias;
+                    light.shadow_normal_bias = lighting.key_shadow_normal_bias;
+                }
+            }
             LightRole::Fill => {
                 *visibility = if lighting.fill_enabled {
                     Visibility::Visible

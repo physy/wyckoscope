@@ -193,6 +193,7 @@ pub(crate) fn setup(
             ..default()
         },
         Transform::from_xyz(8.0, 10.0, 12.0),
+        Visibility::Hidden,
         LightRole::KeyPoint,
     ));
     commands.spawn((
@@ -212,6 +213,19 @@ pub(crate) fn setup(
         Transform::from_xyz(8.0, 10.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
         Visibility::Hidden,
         LightRole::KeySpot,
+    ));
+    commands.spawn((
+        Name::new("User directional light"),
+        DirectionalLight {
+            color: Color::srgb(1.0, 0.94, 0.86),
+            illuminance: 20_000.0,
+            shadows_enabled: true,
+            shadow_depth_bias: 0.02,
+            shadow_normal_bias: 0.55,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 0.7, 0.0)),
+        LightRole::KeyDirectional,
     ));
     commands.spawn((
         Name::new("Soft fill"),

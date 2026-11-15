@@ -329,9 +329,11 @@ pub(crate) enum LightMode {
 pub(crate) enum KeyLightKind {
     Point,
     Spot,
+    Directional,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct LightingSettings {
     pub(crate) ambient_enabled: bool,
     pub(crate) ambient_color: [u8; 3],
@@ -346,6 +348,8 @@ pub(crate) struct LightingSettings {
     pub(crate) key_follow_elevation: f32,
     pub(crate) key_target_offset: [f32; 3],
     pub(crate) key_intensity: f32,
+    pub(crate) key_directional_illuminance: f32,
+    pub(crate) key_directional_rotation: [f32; 3],
     pub(crate) key_range: f32,
     pub(crate) key_radius: f32,
     pub(crate) key_shadows: bool,
@@ -375,11 +379,11 @@ impl Default for LightingSettings {
     fn default() -> Self {
         Self {
             ambient_enabled: true,
-            ambient_color: [209, 222, 250],
-            ambient_brightness: 520.0,
+            ambient_color: [255, 255, 255],
+            ambient_brightness: 1_000.0,
             key_enabled: true,
-            key_kind: KeyLightKind::Point,
-            key_color: [255, 240, 219],
+            key_kind: KeyLightKind::Directional,
+            key_color: [255, 255, 255],
             key_mode: LightMode::Camera,
             key_position: [8.0, 10.0, 12.0],
             key_follow_distance: 17.5,
@@ -387,6 +391,8 @@ impl Default for LightingSettings {
             key_follow_elevation: -89.0,
             key_target_offset: [0.0, 0.0, 0.0],
             key_intensity: 2_000_000.0,
+            key_directional_illuminance: 1_000.0,
+            key_directional_rotation: [-35.0, 40.0, 0.0],
             key_range: 100.0,
             key_radius: 1.5,
             key_shadows: false,
@@ -546,7 +552,7 @@ impl Default for VisualSettings {
             projection_blend: 1.0,
             hdr_tonemapping: false,
             lighting: LightingSettings::default(),
-            exposure_ev: 8.0,
+            exposure_ev: 9.5,
             export_size: [3840, 2160],
         }
     }
@@ -653,6 +659,7 @@ pub(crate) struct BackgroundCamera;
 pub(crate) enum LightRole {
     KeyPoint,
     KeySpot,
+    KeyDirectional,
     Fill,
     AxisKey,
     AxisFill,

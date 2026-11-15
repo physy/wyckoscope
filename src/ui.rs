@@ -1152,12 +1152,6 @@ fn ui_view_tab(
             }
         });
     });
-    ui_lighting_controls(
-        ui,
-        &mut settings.lighting,
-        &mut settings.exposure_ev,
-        &mut settings.hdr_tonemapping,
-    );
     section(ui, "APPEARANCE", |ui| {
         if labeled_slider(ui, "Global atom scale", &mut settings.atom_scale, 0.4..=2.0) {
             dirty.mark(false);
@@ -1209,6 +1203,13 @@ fn ui_view_tab(
                 ui.label("");
             });
     });
+    ui.add_space(16.0);
+    ui_lighting_controls(
+        ui,
+        &mut settings.lighting,
+        &mut settings.exposure_ev,
+        &mut settings.hdr_tonemapping,
+    );
 }
 
 fn ui_unit_cell_controls(ui: &mut egui::Ui, settings: &mut VisualSettings, dirty: &mut SceneDirty) {
@@ -1497,28 +1498,44 @@ fn ui_lighting_controls(
             ui.label("Type");
             ui.radio_value(&mut lighting.key_kind, KeyLightKind::Point, "Point");
             ui.radio_value(&mut lighting.key_kind, KeyLightKind::Spot, "Spot");
+            ui.radio_value(
+                &mut lighting.key_kind,
+                KeyLightKind::Directional,
+                "Directional",
+            );
         });
         color_control(ui, "Color", &mut lighting.key_color);
-        labeled_slider(
-            ui,
-            "Intensity (lm)",
-            &mut lighting.key_intensity,
-            0.0..=5_000_000.0,
-        );
-        labeled_slider(ui, "Range", &mut lighting.key_range, 1.0..=500.0);
-        labeled_slider(ui, "Source radius", &mut lighting.key_radius, 0.0..=20.0);
+        if lighting.key_kind == KeyLightKind::Directional {
+            labeled_slider(
+                ui,
+                "Illuminance (lux)",
+                &mut lighting.key_directional_illuminance,
+                0.0..=100_000.0,
+            );
+        } else {
+            labeled_slider(
+                ui,
+                "Intensity (lm)",
+                &mut lighting.key_intensity,
+                0.0..=5_000_000.0,
+            );
+            labeled_slider(ui, "Range", &mut lighting.key_range, 1.0..=500.0);
+            labeled_slider(ui, "Source radius", &mut lighting.key_radius, 0.0..=20.0);
+        }
         ui.horizontal(|ui| {
             ui.radio_value(&mut lighting.key_mode, LightMode::Camera, "Follow camera");
             ui.radio_value(&mut lighting.key_mode, LightMode::World, "Fixed position");
         });
         match lighting.key_mode {
             LightMode::Camera => {
-                labeled_slider(
-                    ui,
-                    "Light distance",
-                    &mut lighting.key_follow_distance,
-                    0.1..=200.0,
-                );
+                if lighting.key_kind != KeyLightKind::Directional {
+                    labeled_slider(
+                        ui,
+                        "Light distance",
+                        &mut lighting.key_follow_distance,
+                        0.1..=200.0,
+                    );
+                }
                 labeled_slider(
                     ui,
                     "Azimuth around camera (°)",
@@ -1533,7 +1550,16 @@ fn ui_lighting_controls(
                 );
             }
             LightMode::World => {
-                let _ = vector3_control(ui, "Position", &mut lighting.key_position, 0.1);
+                if lighting.key_kind == KeyLightKind::Directional {
+                    let _ = vector3_control(
+                        ui,
+                        "Direction rotation XYZ (°)",
+                        &mut lighting.key_directional_rotation,
+                        1.0,
+                    );
+                } else {
+                    let _ = vector3_control(ui, "Position", &mut lighting.key_position, 0.1);
+                }
             }
         }
         if lighting.key_kind == KeyLightKind::Spot {
