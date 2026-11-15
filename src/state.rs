@@ -16,6 +16,14 @@ pub(crate) struct AppState {
     pub(crate) error: Option<String>,
 }
 
+/// Candidates parsed from one multi-block CIF, awaiting the user's choice.
+#[derive(Resource, Default)]
+pub(crate) struct StructureSelection {
+    pub(crate) file_name: String,
+    pub(crate) candidates: Vec<wyckoscope::parser::StructureCandidate>,
+    pub(crate) selected: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum InspectorTab {
     File,

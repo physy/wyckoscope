@@ -17,6 +17,7 @@ pub(crate) fn load_dropped_file(
     mut dirty: ResMut<SceneDirty>,
     mut selection: ResMut<SelectionState>,
     mut settings: ResMut<VisualSettings>,
+    mut structure_selection: ResMut<StructureSelection>,
     mut history: ResMut<ProjectHistory>,
 ) {
     for event in drops.read() {
@@ -27,6 +28,7 @@ pub(crate) fn load_dropped_file(
                 &mut settings,
                 &mut dirty,
                 &mut selection,
+                &mut structure_selection,
             )
         {
             history.clear();
@@ -146,6 +148,7 @@ pub(crate) fn poll_async_dialogs(
     mut dirty: ResMut<SceneDirty>,
     mut selection: ResMut<SelectionState>,
     mut settings: ResMut<VisualSettings>,
+    mut structure_selection: ResMut<StructureSelection>,
     mut overrides: ResMut<ElementOverrides>,
     mut export: ResMut<ExportState>,
     mut camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
@@ -158,7 +161,14 @@ pub(crate) fn poll_async_dialogs(
     if let Some(path) = open {
         dialogs.open_receiver = None;
         if let Some(path) = path
-            && load_file(&path, &mut state, &mut settings, &mut dirty, &mut selection)
+            && load_file(
+                &path,
+                &mut state,
+                &mut settings,
+                &mut dirty,
+                &mut selection,
+                &mut structure_selection,
+            )
         {
             history.clear();
         }
@@ -229,26 +239,91 @@ fn load_file(
     settings: &mut VisualSettings,
     dirty: &mut SceneDirty,
     selection: &mut SelectionState,
+    structure_selection: &mut StructureSelection,
 ) -> bool {
-    match parser::parse_path(path) {
-        Ok(structure) => {
-            apply_imported_visuals(settings, &structure);
-            state.structure = structure;
-            state.file_name = path
+    structure_selection.candidates.clear();
+    structure_selection.selected = None;
+    match parser::parse_path_candidates(path) {
+        Ok(mut candidates) if candidates.len() == 1 => {
+            let candidate = candidates.remove(0);
+            apply_structure(
+                candidate.structure,
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Structure"),
+                &candidate.data_name,
+                state,
+                settings,
+                dirty,
+                selection,
+            );
+            true
+        }
+        Ok(candidates) => {
+            structure_selection.file_name = path
                 .file_name()
-                .and_then(|v| v.to_str())
+                .and_then(|value| value.to_str())
                 .unwrap_or("Structure")
                 .to_string();
+            structure_selection.candidates = candidates;
             state.error = None;
-            selection.atoms.clear();
-            dirty.mark(true);
-            true
+            false
         }
         Err(error) => {
             state.error = Some(error.to_string());
             false
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_selected_structure(
+    mut structure_selection: ResMut<StructureSelection>,
+    mut state: ResMut<AppState>,
+    mut settings: ResMut<VisualSettings>,
+    mut dirty: ResMut<SceneDirty>,
+    mut selection: ResMut<SelectionState>,
+    mut history: ResMut<ProjectHistory>,
+) {
+    let Some(index) = structure_selection.selected.take() else {
+        return;
+    };
+    let Some(candidate) = structure_selection.candidates.get(index).cloned() else {
+        structure_selection.candidates.clear();
+        return;
+    };
+    apply_structure(
+        candidate.structure,
+        &structure_selection.file_name,
+        &candidate.data_name,
+        &mut state,
+        &mut settings,
+        &mut dirty,
+        &mut selection,
+    );
+    structure_selection.candidates.clear();
+    history.clear();
+}
+
+fn apply_structure(
+    structure: wyckoscope::model::CrystalStructure,
+    file_name: &str,
+    data_name: &str,
+    state: &mut AppState,
+    settings: &mut VisualSettings,
+    dirty: &mut SceneDirty,
+    selection: &mut SelectionState,
+) {
+    apply_imported_visuals(settings, &structure);
+    state.structure = structure;
+    state.file_name = if data_name.is_empty() {
+        file_name.to_string()
+    } else {
+        format!("{file_name} · {data_name}")
+    };
+    state.error = None;
+    selection.atoms.clear();
+    dirty.mark(true);
 }
 
 fn apply_imported_visuals(

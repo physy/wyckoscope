@@ -50,6 +50,7 @@ pub(crate) fn interface(
     mut state: ResMut<AppState>,
     mut settings: ResMut<VisualSettings>,
     mut overrides: ResMut<ElementOverrides>,
+    mut structure_selection: ResMut<StructureSelection>,
     mut dialogs: ResMut<AsyncDialogs>,
     export: Res<ExportState>,
     scene_status: Res<SceneStatus>,
@@ -120,6 +121,7 @@ pub(crate) fn interface(
     let (_, camera_transform) = &*camera;
     draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
     draw_element_legend(ctx, &state, &settings, &overrides, layout.width);
+    structure_selection_dialog(ctx, &mut structure_selection);
     if let Some(error) = state.error.clone() {
         egui::Window::new("Could not open structure")
             .collapsible(false)
@@ -133,6 +135,83 @@ pub(crate) fn interface(
             });
     }
     Ok(())
+}
+
+fn structure_selection_dialog(ctx: &egui::Context, selection: &mut StructureSelection) {
+    if selection.candidates.is_empty() {
+        return;
+    }
+    let mut open = true;
+    let mut selected = None;
+    egui::Window::new("Choose a CIF data block")
+        .collapsible(false)
+        .resizable(false)
+        .default_width(520.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} contains {} complete crystal structures.",
+                    selection.file_name,
+                    selection.candidates.len()
+                ))
+                .color(TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new("Choose the data block to open.")
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.add_space(8.0);
+            for (index, candidate) in selection.candidates.iter().enumerate() {
+                let structure = &candidate.structure;
+                let name = if candidate.data_name.is_empty() {
+                    format!("Data block {}", index + 1)
+                } else {
+                    candidate.data_name.clone()
+                };
+                egui::Frame::NONE
+                    .fill(CARD_BACKGROUND)
+                    .stroke(egui::Stroke::new(1.0, CARD_STROKE))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(name).strong().color(ACCENT));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Open").clicked() {
+                                        selected = Some(index);
+                                    }
+                                },
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {} sites · a,b,c = {:.3}, {:.3}, {:.3} Å",
+                                structure
+                                    .space_group
+                                    .as_deref()
+                                    .unwrap_or("space group not specified"),
+                                structure.asymmetric_atoms.len(),
+                                structure.cell.a,
+                                structure.cell.b,
+                                structure.cell.c,
+                            ))
+                            .size(11.0)
+                            .color(TEXT_SECONDARY),
+                        );
+                    });
+                ui.add_space(5.0);
+            }
+        });
+    if let Some(index) = selected {
+        selection.selected = Some(index);
+    } else if !open {
+        selection.candidates.clear();
+    }
 }
 
 fn draw_orientation_labels(

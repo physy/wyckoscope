@@ -8,7 +8,7 @@ use crate::{
     model::{AtomSite, CrystalStructure, SiteId, SourceFormat, UnitCell},
 };
 
-use super::{ParseError, parse_number};
+use super::{ParseError, StructureCandidate, parse_number};
 
 #[derive(Debug)]
 struct LoopData {
@@ -37,9 +37,38 @@ impl SymmetryOperation {
     }
 }
 
-pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
+#[cfg(test)]
+fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
+    parse_candidates(text).map(|mut candidates| candidates.remove(0).structure)
+}
+
+pub fn parse_candidates(text: &str) -> Result<Vec<StructureCandidate>, ParseError> {
     let tokens = tokenize(text);
-    let (scalars, loops, data_name) = parse_tokens(&tokens);
+    let mut candidates = Vec::new();
+    for block in data_blocks(&tokens) {
+        let (scalars, loops, data_name) = parse_tokens(block);
+        if is_structure_block(&scalars, &loops)
+            && let Ok(structure) = parse_block(block)
+        {
+            candidates.push(StructureCandidate {
+                data_name,
+                structure,
+            });
+        }
+    }
+    if candidates.is_empty() {
+        return parse_block(&tokens).map(|structure| {
+            vec![StructureCandidate {
+                data_name: String::new(),
+                structure,
+            }]
+        });
+    }
+    Ok(candidates)
+}
+
+fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
+    let (scalars, loops, data_name) = parse_tokens(tokens);
     let is_magnetic = loops.iter().any(|loop_data| {
         loop_data.tags.iter().any(|tag| {
             tag.starts_with("_atom_site_moment") || tag.starts_with("_space_group_symop_magn")
@@ -182,7 +211,10 @@ fn space_group_label(scalars: &HashMap<String, String>) -> Option<String> {
     ];
     for tag in SYMBOL_TAGS {
         if let Some(value) = scalars.get(tag) {
-            return Some(value.trim_matches(['\'', '"']).to_string());
+            let value = value.trim_matches(['\'', '"']).trim();
+            if !value.is_empty() && value != "?" && value != "." {
+                return Some(value.to_string());
+            }
         }
     }
     space_group_number(scalars).map(|number| format!("#{number}"))
@@ -752,6 +784,49 @@ fn parse_tokens(tokens: &[String]) -> (HashMap<String, String>, Vec<LoopData>, S
     (scalars, loops, data_name)
 }
 
+/// CIF files may carry multiple `data_` blocks, for example standardized,
+/// published, and reduced cells. Select a self-contained structure block
+/// rather than merging unrelated blocks and allowing later placeholder values
+/// to overwrite its space-group metadata.
+fn data_blocks(tokens: &[String]) -> Vec<&[String]> {
+    let starts: Vec<_> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| {
+            token
+                .to_ascii_lowercase()
+                .starts_with("data_")
+                .then_some(index)
+        })
+        .collect();
+    if starts.is_empty() {
+        return vec![tokens];
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, &start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(tokens.len());
+            &tokens[start..end]
+        })
+        .collect()
+}
+
+fn is_structure_block(scalars: &HashMap<String, String>, loops: &[LoopData]) -> bool {
+    ["_cell_length_a", "_cell_length_b", "_cell_length_c"]
+        .into_iter()
+        .all(|tag| scalars.contains_key(tag))
+        && loops.iter().any(|loop_data| {
+            [
+                "_atom_site_fract_x",
+                "_atom_site_fract_y",
+                "_atom_site_fract_z",
+            ]
+            .into_iter()
+            .all(|tag| loop_data.tags.iter().any(|candidate| candidate == tag))
+        })
+}
+
 fn is_control_token(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     lower == "loop_"
@@ -902,6 +977,82 @@ C1 C 0.1 0.2 0.3
         let structure = parse(text).unwrap();
         assert_eq!(structure.atoms.len(), 2);
         assert_eq!(structure.symmetry_operation_count, 2);
+    }
+
+    #[test]
+    fn selects_the_complete_structure_block_from_multi_block_cif() {
+        let text = r#"
+data_metadata
+_symmetry_Int_Tables_number 62
+
+data_standardized_cell
+_cell_length_a 13.937
+_cell_length_b 8.1357
+_cell_length_c 6.5636
+_symmetry_space_group_name_H-M 'Pnma'
+_symmetry_Int_Tables_number 62
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Mn1 Mn 0 0 0
+
+data_niggli_cell
+_cell_length_a 6.5636
+_cell_length_b 8.1357
+_cell_length_c 13.937
+_symmetry_space_group_name_H-M '?'
+_symmetry_Int_Tables_number ?
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+? ? ? ? ?
+"#;
+        let structure = parse(text).expect("standardized block is valid");
+        assert_eq!(structure.space_group.as_deref(), Some("Pnma"));
+        assert_eq!(structure.symmetry_operation_count, 8);
+        assert_eq!(structure.asymmetric_atoms[0].element, "Mn");
+    }
+
+    #[test]
+    fn returns_each_valid_structure_block_as_a_candidate() {
+        let text = r#"
+data_first
+_cell_length_a 5
+_cell_length_b 5
+_cell_length_c 5
+_symmetry_space_group_name_H-M 'P 1'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+C1 C 0 0 0
+
+data_second
+_cell_length_a 6
+_cell_length_b 6
+_cell_length_c 6
+_symmetry_space_group_name_H-M 'P -1'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Si1 Si 0.1 0.2 0.3
+"#;
+        let candidates = parse_candidates(text).expect("both blocks are valid");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].data_name, "first");
+        assert_eq!(candidates[1].data_name, "second");
+        assert_eq!(candidates[1].structure.space_group.as_deref(), Some("P -1"));
     }
 
     #[test]

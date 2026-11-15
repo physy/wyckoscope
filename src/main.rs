@@ -17,7 +17,9 @@ use wyckoscope::parser;
 
 use camera::{orbit_camera, select_atom, sync_orientation_axes, update_camera_viewports};
 use export::process_export;
-use file_io::{keyboard_shortcuts, load_dropped_file, poll_async_dialogs};
+use file_io::{
+    apply_selected_structure, keyboard_shortcuts, load_dropped_file, poll_async_dialogs,
+};
 use lighting::sync_environment;
 use project::{
     ProjectHistory, UndoRedoRequests, apply_history_requests, initialize_history, track_history,
@@ -25,7 +27,7 @@ use project::{
 use scene::{rebuild_scene, setup};
 use state::{
     AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, InspectorState,
-    SceneDirty, SceneStatus, SelectionPointer, SelectionState, VisualSettings,
+    SceneDirty, SceneStatus, SelectionPointer, SelectionState, StructureSelection, VisualSettings,
 };
 use ui::interface;
 
@@ -59,6 +61,7 @@ fn main() {
         .init_resource::<InspectorState>()
         .init_resource::<SelectionState>()
         .init_resource::<SelectionPointer>()
+        .init_resource::<StructureSelection>()
         .init_resource::<ProjectHistory>()
         .init_resource::<UndoRedoRequests>()
         .insert_resource(SceneDirty {
@@ -87,6 +90,7 @@ fn main() {
             (
                 load_dropped_file,
                 poll_async_dialogs,
+                apply_selected_structure,
                 keyboard_shortcuts,
                 apply_history_requests,
                 select_atom,

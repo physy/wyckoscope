@@ -7,6 +7,12 @@ use thiserror::Error;
 
 use crate::model::CrystalStructure;
 
+#[derive(Debug, Clone)]
+pub struct StructureCandidate {
+    pub data_name: String,
+    pub structure: CrystalStructure,
+}
+
 #[derive(Debug, Error)]
 pub enum ParseError {
     #[error("unsupported file format: {0}")]
@@ -24,23 +30,37 @@ pub enum ParseError {
 }
 
 pub fn parse_path(path: &Path) -> Result<CrystalStructure, ParseError> {
+    parse_path_candidates(path).map(|mut candidates| candidates.remove(0).structure)
+}
+
+pub fn parse_path_candidates(path: &Path) -> Result<Vec<StructureCandidate>, ParseError> {
     let text = std::fs::read_to_string(path)?;
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    parse_text(&text, &extension)
+    parse_text_candidates(&text, &extension)
 }
 
 pub fn parse_text(text: &str, extension: &str) -> Result<CrystalStructure, ParseError> {
+    parse_text_candidates(text, extension).map(|mut candidates| candidates.remove(0).structure)
+}
+
+pub fn parse_text_candidates(
+    text: &str,
+    extension: &str,
+) -> Result<Vec<StructureCandidate>, ParseError> {
     match extension
         .trim_start_matches('.')
         .to_ascii_lowercase()
         .as_str()
     {
-        "cif" | "mcif" => cif::parse(text),
-        "vesta" => vesta::parse(text),
+        "cif" | "mcif" => cif::parse_candidates(text),
+        "vesta" => Ok(vec![StructureCandidate {
+            data_name: String::new(),
+            structure: vesta::parse(text)?,
+        }]),
         other => Err(ParseError::UnsupportedFormat(other.to_string())),
     }
 }
