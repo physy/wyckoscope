@@ -6,7 +6,8 @@ use std::{
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use wyckoscope::model::CrystalStructure;
+use serde::{Deserialize, Serialize};
+use wyckoscope::model::{CrystalStructure, SiteId};
 
 #[derive(Resource)]
 pub(crate) struct AppState {
@@ -15,24 +16,37 @@ pub(crate) struct AppState {
     pub(crate) error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum InspectorTab {
+    File,
     Structure,
     Vectors,
     Bonds,
     View,
     Elements,
-    Export,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource)]
+pub(crate) struct InspectorState {
+    pub(crate) tab: InspectorTab,
+}
+
+impl Default for InspectorState {
+    fn default() -> Self {
+        Self {
+            tab: InspectorTab::File,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AtomDisplayMode {
     BallAndStick,
     SpaceFilling,
     Wireframe,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BondMatchMode {
     Element,
     SiteLabel,
@@ -47,7 +61,7 @@ impl BondMatchMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BondSearchMode {
     A2BondedToA1,
     AtomsBondedToA1,
@@ -62,7 +76,7 @@ impl BondSearchMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BondBoundaryMode {
     DoNotSearchBeyond,
     SearchAdditionalForA1,
@@ -79,7 +93,7 @@ impl BondBoundaryMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BondRule {
     pub(crate) enabled: bool,
     pub(crate) show_bonds: bool,
@@ -108,7 +122,7 @@ impl Default for BondRule {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum VectorCoordinates {
     Lattice,
     Cartesian,
@@ -124,7 +138,7 @@ impl VectorCoordinates {
 }
 
 /// VESTA-compatible symmetry behavior for vectors attached to a site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum VectorKind {
     Axial,
     Polar,
@@ -142,17 +156,10 @@ impl VectorKind {
 /// The atom(s) a vector is attached to. All vectors use this same attachment
 /// model, regardless of whether their initial values came from an mCIF, VESTA,
 /// or the user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum VectorTarget {
-    Site {
-        label: String,
-        element: String,
-    },
-    IndividualAtom {
-        label: String,
-        element: String,
-        position: Vec3,
-    },
+    Site { site_id: SiteId },
+    IndividualAtom { site_id: SiteId, fractional: Vec3 },
 }
 
 impl VectorTarget {
@@ -164,7 +171,7 @@ impl VectorTarget {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VectorStyle {
     pub(crate) color: [u8; 3],
     /// Multiplier for the physical vector length.
@@ -206,7 +213,7 @@ impl VectorStyle {
 }
 
 /// A single renderable vector definition and its attachment target.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VectorLayer {
     pub(crate) enabled: bool,
     pub(crate) target: VectorTarget,
@@ -222,8 +229,7 @@ impl VectorLayer {
         Self {
             enabled: true,
             target: VectorTarget::Site {
-                label: atom.label.clone(),
-                element: atom.element.clone(),
+                site_id: atom.site_id,
             },
             kind: VectorKind::Axial,
             components: [0.0, 0.0, 1.0],
@@ -236,9 +242,8 @@ impl VectorLayer {
         Self {
             enabled: true,
             target: VectorTarget::IndividualAtom {
-                label: atom.label.clone(),
-                element: atom.element.clone(),
-                position: atom.position,
+                site_id: atom.site_id,
+                fractional: atom.fractional,
             },
             kind: VectorKind::Axial,
             components: [0.0, 0.0, 1.0],
@@ -248,8 +253,7 @@ impl VectorLayer {
     }
 
     pub(crate) fn imported_site(
-        label: String,
-        element: String,
+        site_id: SiteId,
         components: [f32; 3],
         color: [u8; 3],
         scale: f32,
@@ -258,7 +262,7 @@ impl VectorLayer {
     ) -> Self {
         Self {
             enabled: true,
-            target: VectorTarget::Site { label, element },
+            target: VectorTarget::Site { site_id },
             kind: VectorKind::Axial,
             components,
             coordinates: VectorCoordinates::Cartesian,
@@ -277,10 +281,10 @@ impl VectorLayer {
         }
     }
 
-    pub(crate) fn magnetic_moment_site(label: String, element: String, moment: Vec3) -> Self {
+    pub(crate) fn magnetic_moment_site(site_id: SiteId, moment: Vec3) -> Self {
         Self {
             enabled: true,
-            target: VectorTarget::Site { label, element },
+            target: VectorTarget::Site { site_id },
             kind: VectorKind::Axial,
             components: moment.to_array(),
             coordinates: VectorCoordinates::Cartesian,
@@ -289,7 +293,7 @@ impl VectorLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VectorSettings {
     /// A presentation-only multiplier applied uniformly to every vector.
     pub(crate) display_scale: f32,
@@ -315,19 +319,19 @@ impl AtomDisplayMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum LightMode {
     Camera,
     World,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum KeyLightKind {
     Point,
     Spot,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LightingSettings {
     pub(crate) ambient_enabled: bool,
     pub(crate) ambient_color: [u8; 3],
@@ -410,7 +414,7 @@ impl Default for LightingSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AxisLabelFont {
     SansSerif,
     Monospace,
@@ -432,7 +436,7 @@ impl AxisLabelFont {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum UnitCellDisplay {
     Hidden,
     Single,
@@ -449,7 +453,7 @@ impl UnitCellDisplay {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum CellLineStyle {
     Solid,
     Dotted,
@@ -466,9 +470,8 @@ impl CellLineStyle {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, Serialize, Deserialize)]
 pub(crate) struct VisualSettings {
-    pub(crate) tab: InspectorTab,
     pub(crate) supercell: [u32; 3],
     pub(crate) expand_symmetry: bool,
     pub(crate) show_boundary_atoms: bool,
@@ -505,7 +508,6 @@ pub(crate) struct VisualSettings {
 impl Default for VisualSettings {
     fn default() -> Self {
         Self {
-            tab: InspectorTab::Structure,
             supercell: [1, 1, 1],
             expand_symmetry: true,
             show_boundary_atoms: true,
@@ -541,14 +543,14 @@ impl Default for VisualSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ElementAppearance {
     pub(crate) color: [u8; 3],
     pub(crate) radius: f32,
     pub(crate) visible: bool,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct ElementOverrides(pub(crate) HashMap<String, ElementAppearance>);
 
 #[derive(Resource)]
@@ -571,6 +573,8 @@ pub(crate) struct SceneStatus {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedAtom {
+    /// Identity of the asymmetric crystallographic site that generated this atom.
+    pub(crate) site_id: SiteId,
     pub(crate) element: String,
     pub(crate) label: String,
     pub(crate) position: Vec3,
@@ -603,6 +607,8 @@ impl Default for InspectorLayout {
 pub(crate) struct AsyncDialogs {
     pub(crate) open_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
     pub(crate) save_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
+    pub(crate) project_open_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
+    pub(crate) project_save_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
     pub(crate) save_size: [u32; 2],
 }
 
@@ -682,6 +688,8 @@ impl OrbitCamera {
 
 #[derive(Clone)]
 pub(crate) struct RenderAtom {
+    /// Identity of the asymmetric crystallographic site that generated this atom.
+    pub(crate) site_id: SiteId,
     pub(crate) position: Vec3,
     pub(crate) element: String,
     pub(crate) label: String,
@@ -693,8 +701,6 @@ pub(crate) struct RenderAtom {
 
 impl SelectedAtom {
     pub(crate) fn matches(&self, atom: &RenderAtom) -> bool {
-        self.element == atom.element
-            && self.label == atom.label
-            && self.position.distance_squared(atom.position) < 1.0e-8
+        self.site_id == atom.site_id && self.fractional.distance_squared(atom.fractional) < 1.0e-8
     }
 }

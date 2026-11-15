@@ -5,7 +5,11 @@ use bevy_egui::{EguiContexts, egui};
 
 use crate::{
     AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE,
-    file_io::{request_open_dialog, request_save_dialog},
+    file_io::{
+        request_open_dialog, request_project_open_dialog, request_project_save_dialog,
+        request_save_dialog,
+    },
+    project::{ProjectHistory, UndoRedoRequests},
     scene::{crystal_to_world, default_appearance, periodic_image_count, view_directions},
     state::*,
 };
@@ -50,6 +54,9 @@ pub(crate) fn interface(
     export: Res<ExportState>,
     scene_status: Res<SceneStatus>,
     mut selection: ResMut<SelectionState>,
+    mut inspector: ResMut<InspectorState>,
+    history: Res<ProjectHistory>,
+    mut history_requests: ResMut<UndoRedoRequests>,
     mut dirty: ResMut<SceneDirty>,
     mut layout: ResMut<InspectorLayout>,
     mut camera: Single<(&mut OrbitCamera, &Transform), With<OrbitCamera>>,
@@ -74,23 +81,30 @@ pub(crate) fn interface(
         .show(ctx, |ui| {
             app_header(ui);
             ui.add_space(18.0);
-            tab_bar(ui, &mut settings.tab);
+            tab_bar(ui, &mut inspector.tab);
             panel_divider(ui);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| match settings.tab {
+                .show(ui, |ui| match inspector.tab {
+                    InspectorTab::File => ui_file_tab(
+                        ui,
+                        &mut settings,
+                        &mut dialogs,
+                        &export,
+                        &history,
+                        &mut history_requests,
+                    ),
                     InspectorTab::Structure => ui_structure_tab(
                         ui,
                         &state,
                         &mut settings,
                         &overrides,
-                        &mut dialogs,
                         &scene_status,
                         &mut selection,
                         &mut dirty,
                     ),
                     InspectorTab::Vectors => {
-                        ui_vectors_tab(ui, &mut settings, &selection, &mut dirty)
+                        ui_vectors_tab(ui, &state, &mut settings, &selection, &mut dirty)
                     }
                     InspectorTab::Bonds => ui_bonds_tab(ui, &state, &mut settings, &mut dirty),
                     InspectorTab::View => {
@@ -100,7 +114,6 @@ pub(crate) fn interface(
                     InspectorTab::Elements => {
                         ui_elements_tab(ui, &state, &mut overrides, &mut dirty)
                     }
-                    InspectorTab::Export => ui_export_tab(ui, &mut settings, &mut dialogs, &export),
                 });
         });
     layout.width = panel.response.rect.width();
@@ -266,14 +279,14 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
         .num_columns(2)
         .spacing([6.0, 6.0])
         .show(ui, |ui| {
+            tab_button(ui, active, InspectorTab::File, "File");
             tab_button(ui, active, InspectorTab::Structure, "Structure");
+            ui.end_row();
             tab_button(ui, active, InspectorTab::Vectors, "Vectors");
-            ui.end_row();
             tab_button(ui, active, InspectorTab::Bonds, "Bonds");
-            tab_button(ui, active, InspectorTab::View, "View");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::View, "View");
             tab_button(ui, active, InspectorTab::Elements, "Elements");
-            tab_button(ui, active, InspectorTab::Export, "Export");
             ui.end_row();
         });
 }
@@ -291,43 +304,92 @@ fn tab_button(ui: &mut egui::Ui, active: &mut InspectorTab, tab: InspectorTab, l
 }
 
 #[allow(clippy::too_many_arguments)]
+fn ui_file_tab(
+    ui: &mut egui::Ui,
+    settings: &mut VisualSettings,
+    dialogs: &mut AsyncDialogs,
+    export: &ExportState,
+    history: &ProjectHistory,
+    history_requests: &mut UndoRedoRequests,
+) {
+    section(ui, "PROJECT", |ui| {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(history.can_undo(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                history_requests.undo = true;
+            }
+            if ui
+                .add_enabled(history.can_redo(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                history_requests.redo = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            let project_opening = dialogs.project_open_receiver.is_some();
+            if ui
+                .add_enabled(!project_opening, egui::Button::new("Open project"))
+                .clicked()
+            {
+                request_project_open_dialog(dialogs);
+            }
+            let project_saving = dialogs.project_save_receiver.is_some();
+            if ui
+                .add_enabled(
+                    !project_saving,
+                    egui::Button::new(if project_saving {
+                        "Saving project…"
+                    } else {
+                        "Save project"
+                    }),
+                )
+                .clicked()
+            {
+                request_project_save_dialog(dialogs);
+            }
+        });
+    });
+    section(ui, "STRUCTURE FILE", |ui| {
+        let opening = dialogs.open_receiver.is_some();
+        let response = ui
+            .scope_builder(
+                egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
+                |ui| {
+                    ui.add_enabled(
+                        !opening,
+                        egui::Button::new(if opening {
+                            "Opening file dialog…"
+                        } else {
+                            "Open structure"
+                        })
+                        .min_size(egui::vec2(ui.available_width(), 38.0)),
+                    )
+                },
+            )
+            .inner;
+        if response.clicked() {
+            request_open_dialog(dialogs);
+        }
+        ui.label(
+            egui::RichText::new("or drop .cif, .mcif, or .vesta anywhere")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
+    });
+    ui_export_tab(ui, settings, dialogs, export);
+}
+
 fn ui_structure_tab(
     ui: &mut egui::Ui,
     state: &AppState,
     settings: &mut VisualSettings,
     overrides: &ElementOverrides,
-    dialogs: &mut AsyncDialogs,
     status: &SceneStatus,
     selection: &mut SelectionState,
     dirty: &mut SceneDirty,
 ) {
-    ui.add_space(12.0);
-    let opening = dialogs.open_receiver.is_some();
-    let open_button_width = ui.available_width();
-    let response = ui
-        .scope_builder(
-            egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
-            |ui| {
-                ui.add_enabled(
-                    !opening,
-                    egui::Button::new(if opening {
-                        "Opening file dialog…"
-                    } else {
-                        "Open structure"
-                    })
-                    .min_size(egui::vec2(open_button_width, 38.0)),
-                )
-            },
-        )
-        .inner;
-    if response.clicked() {
-        request_open_dialog(dialogs);
-    }
-    ui.label(
-        egui::RichText::new("or drop .cif, .mcif, or .vesta anywhere")
-            .size(11.0)
-            .color(TEXT_SECONDARY),
-    );
     section(ui, "STRUCTURE", |ui| {
         ui.label(
             egui::RichText::new(&state.structure.title)
@@ -562,6 +624,7 @@ fn ui_selection_controls(
 
 fn ui_vectors_tab(
     ui: &mut egui::Ui,
+    state: &AppState,
     settings: &mut VisualSettings,
     selection: &SelectionState,
     dirty: &mut SceneDirty,
@@ -654,12 +717,7 @@ fn ui_vectors_tab(
         }
         let mut remove = None;
         for (index, vector) in settings.vectors.layers.iter_mut().enumerate() {
-            let target = match &vector.target {
-                VectorTarget::Site { label, element } => format!("{element} {label}"),
-                VectorTarget::IndividualAtom { label, element, .. } => {
-                    format!("{element} {label}")
-                }
-            };
+            let target = vector_target_description(&vector.target, state);
             egui::Frame::NONE
                 .fill(CARD_BACKGROUND)
                 .stroke(egui::Stroke::new(1.0, CARD_STROKE))
@@ -772,6 +830,25 @@ fn ui_vectors_tab(
             dirty.mark(false);
         }
     });
+}
+
+fn vector_target_description(target: &VectorTarget, state: &AppState) -> String {
+    let (site_id, individual) = match target {
+        VectorTarget::Site { site_id } => (*site_id, false),
+        VectorTarget::IndividualAtom { site_id, .. } => (*site_id, true),
+    };
+    let site = state
+        .structure
+        .asymmetric_atoms
+        .iter()
+        .find(|atom| atom.site_id == site_id)
+        .map(|atom| format!("{} {}", atom.element, atom.label))
+        .unwrap_or_else(|| format!("Missing site #{}", site_id.0));
+    if individual {
+        format!("{site} (individual)")
+    } else {
+        site
+    }
 }
 
 fn ui_bonds_tab(

@@ -2,6 +2,7 @@ mod camera;
 mod export;
 mod file_io;
 mod lighting;
+mod project;
 mod scene;
 mod state;
 mod ui;
@@ -18,10 +19,13 @@ use camera::{orbit_camera, select_atom, sync_orientation_axes, update_camera_vie
 use export::process_export;
 use file_io::{keyboard_shortcuts, load_dropped_file, poll_async_dialogs};
 use lighting::sync_environment;
+use project::{
+    ProjectHistory, UndoRedoRequests, apply_history_requests, initialize_history, track_history,
+};
 use scene::{rebuild_scene, setup};
 use state::{
-    AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, SceneDirty,
-    SceneStatus, SelectionPointer, SelectionState, VisualSettings,
+    AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, InspectorState,
+    SceneDirty, SceneStatus, SelectionPointer, SelectionState, VisualSettings,
 };
 use ui::interface;
 
@@ -52,8 +56,11 @@ fn main() {
         .init_resource::<ExportState>()
         .init_resource::<SceneStatus>()
         .init_resource::<InspectorLayout>()
+        .init_resource::<InspectorState>()
         .init_resource::<SelectionState>()
         .init_resource::<SelectionPointer>()
+        .init_resource::<ProjectHistory>()
+        .init_resource::<UndoRedoRequests>()
         .insert_resource(SceneDirty {
             rebuild: true,
             reset_camera: true,
@@ -74,13 +81,14 @@ fn main() {
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(WireframePlugin::default())
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, initialize_history).chain())
         .add_systems(
             Update,
             (
                 load_dropped_file,
                 poll_async_dialogs,
                 keyboard_shortcuts,
+                apply_history_requests,
                 select_atom,
                 rebuild_scene,
                 orbit_camera,
@@ -88,6 +96,7 @@ fn main() {
                 sync_orientation_axes,
                 sync_environment,
                 process_export,
+                track_history,
             )
                 .chain(),
         )

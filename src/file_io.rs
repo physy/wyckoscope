@@ -6,7 +6,10 @@ use std::{
 use bevy::{prelude::*, tasks::IoTaskPool, window::FileDragAndDrop};
 use wyckoscope::parser;
 
-use crate::state::*;
+use crate::{
+    project::{ProjectHistory, UndoRedoRequests, capture_document, read_project, write_project},
+    state::*,
+};
 
 pub(crate) fn load_dropped_file(
     mut drops: MessageReader<FileDragAndDrop>,
@@ -14,16 +17,19 @@ pub(crate) fn load_dropped_file(
     mut dirty: ResMut<SceneDirty>,
     mut selection: ResMut<SelectionState>,
     mut settings: ResMut<VisualSettings>,
+    mut history: ResMut<ProjectHistory>,
 ) {
     for event in drops.read() {
-        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event {
-            load_file(
+        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event
+            && load_file(
                 path_buf,
                 &mut state,
                 &mut settings,
                 &mut dirty,
                 &mut selection,
-            );
+            )
+        {
+            history.clear();
         }
     }
 }
@@ -31,8 +37,25 @@ pub(crate) fn load_dropped_file(
 pub(crate) fn keyboard_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut dialogs: ResMut<AsyncDialogs>,
+    mut history_requests: ResMut<UndoRedoRequests>,
 ) {
-    if keyboard.just_pressed(KeyCode::KeyO) {
+    let command = keyboard.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+    if command && keyboard.just_pressed(KeyCode::KeyZ) {
+        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+            history_requests.redo = true;
+        } else {
+            history_requests.undo = true;
+        }
+    } else if command && keyboard.just_pressed(KeyCode::KeyY) {
+        history_requests.redo = true;
+    } else if command && keyboard.just_pressed(KeyCode::KeyS) {
+        request_project_save_dialog(&mut dialogs);
+    } else if keyboard.just_pressed(KeyCode::KeyO) {
         request_open_dialog(&mut dialogs);
     }
 }
@@ -77,13 +100,56 @@ pub(crate) fn request_save_dialog(dialogs: &mut AsyncDialogs, size: [u32; 2]) {
         .detach();
 }
 
+pub(crate) fn request_project_open_dialog(dialogs: &mut AsyncDialogs) {
+    if dialogs.project_open_receiver.is_some() {
+        return;
+    }
+    let (sender, receiver) = mpsc::channel();
+    dialogs.project_open_receiver = Some(Mutex::new(receiver));
+    IoTaskPool::get()
+        .spawn(async move {
+            let path = rfd::AsyncFileDialog::new()
+                .set_title("Open Wyckoscope project")
+                .add_filter("Wyckoscope project", &["wyckoscope"])
+                .pick_file()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let _ = sender.send(path);
+        })
+        .detach();
+}
+
+pub(crate) fn request_project_save_dialog(dialogs: &mut AsyncDialogs) {
+    if dialogs.project_save_receiver.is_some() {
+        return;
+    }
+    let (sender, receiver) = mpsc::channel();
+    dialogs.project_save_receiver = Some(Mutex::new(receiver));
+    IoTaskPool::get()
+        .spawn(async move {
+            let path = rfd::AsyncFileDialog::new()
+                .set_title("Save Wyckoscope project")
+                .set_file_name("crystal.wyckoscope")
+                .add_filter("Wyckoscope project", &["wyckoscope"])
+                .save_file()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let _ = sender.send(path);
+        })
+        .detach();
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn poll_async_dialogs(
     mut dialogs: ResMut<AsyncDialogs>,
     mut state: ResMut<AppState>,
     mut dirty: ResMut<SceneDirty>,
     mut selection: ResMut<SelectionState>,
     mut settings: ResMut<VisualSettings>,
+    mut overrides: ResMut<ElementOverrides>,
     mut export: ResMut<ExportState>,
+    mut camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
+    mut history: ResMut<ProjectHistory>,
 ) {
     let open = dialogs
         .open_receiver
@@ -91,8 +157,10 @@ pub(crate) fn poll_async_dialogs(
         .and_then(|receiver| receiver.lock().ok().and_then(|value| value.try_recv().ok()));
     if let Some(path) = open {
         dialogs.open_receiver = None;
-        if let Some(path) = path {
-            load_file(&path, &mut state, &mut settings, &mut dirty, &mut selection);
+        if let Some(path) = path
+            && load_file(&path, &mut state, &mut settings, &mut dirty, &mut selection)
+        {
+            history.clear();
         }
     }
     let save = dialogs
@@ -113,6 +181,46 @@ pub(crate) fn poll_async_dialogs(
             export.message = Some("Preparing high-resolution render…".to_string());
         }
     }
+    let project_open = dialogs
+        .project_open_receiver
+        .as_ref()
+        .and_then(|receiver| receiver.lock().ok().and_then(|value| value.try_recv().ok()));
+    if let Some(path) = project_open {
+        dialogs.project_open_receiver = None;
+        if let Some(path) = path {
+            let (orbit, transform) = &mut *camera;
+            if let Err(error) = read_project(
+                &path,
+                &mut state,
+                &mut settings,
+                &mut overrides,
+                &mut selection,
+                &mut dirty,
+                orbit,
+                transform,
+                &mut history,
+            ) {
+                state.error = Some(error);
+            }
+        }
+    }
+    let project_save = dialogs
+        .project_save_receiver
+        .as_ref()
+        .and_then(|receiver| receiver.lock().ok().and_then(|value| value.try_recv().ok()));
+    if let Some(path) = project_save {
+        dialogs.project_save_receiver = None;
+        if let Some(mut path) = path {
+            if path.extension().is_none() {
+                path.set_extension("wyckoscope");
+            }
+            let document = capture_document(&state, &settings, &overrides, &camera.0);
+            match write_project(&path, document) {
+                Ok(()) => state.error = None,
+                Err(error) => state.error = Some(format!("Could not save project: {error}")),
+            }
+        }
+    }
 }
 
 fn load_file(
@@ -121,7 +229,7 @@ fn load_file(
     settings: &mut VisualSettings,
     dirty: &mut SceneDirty,
     selection: &mut SelectionState,
-) {
+) -> bool {
     match parser::parse_path(path) {
         Ok(structure) => {
             apply_imported_visuals(settings, &structure);
@@ -134,8 +242,12 @@ fn load_file(
             state.error = None;
             selection.atoms.clear();
             dirty.mark(true);
+            true
         }
-        Err(error) => state.error = Some(error.to_string()),
+        Err(error) => {
+            state.error = Some(error.to_string());
+            false
+        }
     }
 }
 
@@ -154,9 +266,8 @@ fn apply_imported_visuals(
         .vectors
         .layers
         .extend(structure.asymmetric_atoms.iter().filter_map(|atom| {
-            atom.magnetic_moment.map(|moment| {
-                VectorLayer::magnetic_moment_site(atom.label.clone(), atom.element.clone(), moment)
-            })
+            atom.magnetic_moment
+                .map(|moment| VectorLayer::magnetic_moment_site(atom.site_id, moment))
         }));
     if structure.source_format == wyckoscope::model::SourceFormat::Vesta {
         settings.bond_match_mode = BondMatchMode::Element;
@@ -184,8 +295,7 @@ fn apply_imported_visuals(
                     .iter()
                     .find(|atom| atom.label == vector.label)?;
                 Some(VectorLayer::imported_site(
-                    vector.label.clone(),
-                    atom.element.clone(),
+                    atom.site_id,
                     vector.components.to_array(),
                     vector.color,
                     vector.scale,

@@ -6368,6 +6368,8 @@ dependencies = [
  "bevy_egui",
  "cryspglib",
  "rfd",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

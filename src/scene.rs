@@ -825,6 +825,7 @@ fn make_render_atom(
 ) -> RenderAtom {
     let position = cell.fractional_to_cartesian(fractional);
     RenderAtom {
+        site_id: atom.site_id,
         position: crystal_to_world(position) - center,
         element: atom.element.clone(),
         label: atom.label.clone(),
@@ -837,16 +838,11 @@ fn make_render_atom(
 
 fn vector_matches_atom(target: &VectorTarget, atom: &RenderAtom) -> bool {
     match target {
-        VectorTarget::Site { label, .. } => atom.label == *label,
+        VectorTarget::Site { site_id } => atom.site_id == *site_id,
         VectorTarget::IndividualAtom {
-            label,
-            element,
-            position,
-        } => {
-            atom.element == *element
-                && atom.label == *label
-                && position.distance_squared(atom.position) < 1.0e-8
-        }
+            site_id,
+            fractional,
+        } => atom.site_id == *site_id && atom.fractional.distance_squared(*fractional) < 1.0e-8,
     }
 }
 
@@ -1336,10 +1332,10 @@ pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, V
 mod tests {
     use super::{
         canonical_fractional, crystal_to_world, periodic_image_count, periodic_image_offsets,
-        resolved_vector_direction,
+        resolved_vector_direction, vector_matches_atom,
     };
     use bevy::prelude::{Mat3, Vec3};
-    use wyckoscope::model::UnitCell;
+    use wyckoscope::model::{SiteId, UnitCell};
 
     use crate::state::{
         RenderAtom, VectorCoordinates, VectorKind, VectorLayer, VectorStyle, VectorTarget,
@@ -1379,6 +1375,7 @@ mod tests {
     fn axial_site_vectors_apply_magnetic_time_reversal_but_polar_vectors_do_not() {
         let cell = UnitCell::new(1.0, 1.0, 1.0, 90.0, 90.0, 90.0);
         let atom = RenderAtom {
+            site_id: SiteId(7),
             position: Vec3::ZERO,
             element: "Fe".to_string(),
             label: "Fe1".to_string(),
@@ -1389,10 +1386,7 @@ mod tests {
         };
         let mut vector = VectorLayer {
             enabled: true,
-            target: VectorTarget::Site {
-                label: "Fe1".to_string(),
-                element: "Fe".to_string(),
-            },
+            target: VectorTarget::Site { site_id: SiteId(7) },
             kind: VectorKind::Axial,
             components: [0.0, 0.0, 1.0],
             coordinates: VectorCoordinates::Cartesian,
@@ -1415,5 +1409,30 @@ mod tests {
             resolved_vector_direction(&vector, &atom, &cell),
             crystal_to_world(Vec3::Z)
         );
+    }
+
+    #[test]
+    fn individual_vector_target_survives_world_recentering() {
+        let target = VectorTarget::IndividualAtom {
+            site_id: SiteId(12),
+            fractional: Vec3::new(1.0, 0.5, 0.0),
+        };
+        let atom = RenderAtom {
+            site_id: SiteId(12),
+            position: Vec3::new(-3.0, 7.0, 2.0),
+            element: "O".to_string(),
+            label: "O1".to_string(),
+            fractional: Vec3::new(1.0, 0.5, 0.0),
+            symmetry_rotation: Mat3::IDENTITY,
+            symmetry_time_reversal: 1.0,
+            occupancy: 1.0,
+        };
+        assert!(vector_matches_atom(&target, &atom));
+
+        let recentered_atom = RenderAtom {
+            position: Vec3::new(14.0, -8.0, -5.0),
+            ..atom
+        };
+        assert!(vector_matches_atom(&target, &recentered_atom));
     }
 }

@@ -1,7 +1,13 @@
 use bevy::prelude::{Mat3, Vec3};
+use serde::{Deserialize, Serialize};
+
+/// Stable identifier for a crystallographic site within one structure document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SiteId(pub u64);
 
 #[derive(Debug, Clone)]
 pub struct AtomSite {
+    pub site_id: SiteId,
     pub element: String,
     pub label: String,
     pub fractional: Vec3,
@@ -133,7 +139,7 @@ impl CrystalStructure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceFormat {
     Cif,
     Mcif,

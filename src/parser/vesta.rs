@@ -3,7 +3,7 @@ use bevy::prelude::{Mat3, Vec3};
 use crate::{
     elements::normalize_symbol,
     model::{
-        AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals,
+        AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals, SiteId,
         SourceFormat, UnitCell,
     },
 };
@@ -83,6 +83,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
         }
         if parts.len() >= 7 && parts[0].parse::<usize>().is_ok() {
             let atom = AtomSite {
+                site_id: SiteId(atoms.len() as u64),
                 element: normalize_symbol(parts[1]),
                 label: parts[2].to_string(),
                 occupancy: parse_number(parts[3], "STRUC occupancy").unwrap_or(1.0),

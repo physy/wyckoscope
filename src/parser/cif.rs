@@ -5,7 +5,7 @@ use cryspglib::spg_database::{SPACEGROUP_TYPES, get_spacegroup_operations};
 
 use crate::{
     elements::normalize_symbol,
-    model::{AtomSite, CrystalStructure, SourceFormat, UnitCell},
+    model::{AtomSite, CrystalStructure, SiteId, SourceFormat, UnitCell},
 };
 
 use super::{ParseError, parse_number};
@@ -103,6 +103,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
             .unwrap_or(1.0);
         let magnetic_moment = magnetic_moments.get(&label).copied();
         base_atoms.push(AtomSite {
+            site_id: SiteId(base_atoms.len() as u64),
             element: normalize_symbol(raw_symbol),
             label,
             fractional: wrap01(fractional),

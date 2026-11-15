@@ -78,11 +78,13 @@ pub(crate) fn select_atom(
         });
     let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if let Some(picked) = picked {
+        let clicked_atom = picked.atom.clone();
         let coordination = atoms
             .iter()
             .filter(|other| atoms_are_bonded(&picked.atom, &other.atom, &settings))
             .count();
         let picked = SelectedAtom {
+            site_id: picked.atom.site_id,
             element: picked.atom.element.clone(),
             label: picked.atom.label.clone(),
             position: picked.atom.position,
@@ -90,11 +92,11 @@ pub(crate) fn select_atom(
             coordination,
         };
         if shift {
-            if let Some(index) = selection.atoms.iter().position(|selected| {
-                selected.element == picked.element
-                    && selected.label == picked.label
-                    && selected.position.distance_squared(picked.position) < 1.0e-8
-            }) {
+            if let Some(index) = selection
+                .atoms
+                .iter()
+                .position(|selected| selected.matches(&clicked_atom))
+            {
                 selection.atoms.remove(index);
             } else {
                 if selection.atoms.len() == 3 {
