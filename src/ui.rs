@@ -119,6 +119,7 @@ pub(crate) fn interface(
     layout.width = panel.response.rect.width();
     let (_, camera_transform) = &*camera;
     draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
+    draw_element_legend(ctx, &state, &settings, &overrides, layout.width);
     if let Some(error) = state.error.clone() {
         egui::Window::new("Could not open structure")
             .collapsible(false)
@@ -244,6 +245,108 @@ fn draw_orientation_labels(
                 );
             }
         });
+}
+
+fn draw_element_legend(
+    ctx: &egui::Context,
+    state: &AppState,
+    settings: &VisualSettings,
+    overrides: &ElementOverrides,
+    panel_width: f32,
+) {
+    if !settings.show_element_legend {
+        return;
+    }
+    let mut elements: Vec<_> = state
+        .structure
+        .visible_atoms(settings.expand_symmetry)
+        .iter()
+        .filter(|atom| {
+            overrides
+                .0
+                .get(&atom.element)
+                .is_none_or(|appearance| appearance.visible)
+        })
+        .map(|atom| atom.element.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    elements.sort_unstable();
+    if elements.is_empty() {
+        return;
+    }
+
+    egui::Area::new(egui::Id::new("element_legend"))
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(panel_width + AXIS_VIEW_MARGIN, AXIS_VIEW_MARGIN),
+        )
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::same(2))
+                .show(ui, |ui| {
+                    let column_count = usize::from(elements.len() > 7) + 1;
+                    let rows_per_column = elements.len().div_ceil(column_count);
+                    ui.columns(column_count, |columns| {
+                        for (column, ui) in columns.iter_mut().enumerate() {
+                            let start = column * rows_per_column;
+                            let end = (start + rows_per_column).min(elements.len());
+                            for symbol in &elements[start..end] {
+                                draw_element_legend_item(ui, symbol, overrides, settings);
+                            }
+                        }
+                    });
+                });
+        });
+}
+
+fn draw_element_legend_item(
+    ui: &mut egui::Ui,
+    symbol: &str,
+    overrides: &ElementOverrides,
+    settings: &VisualSettings,
+) {
+    let appearance = overrides
+        .0
+        .get(symbol)
+        .cloned()
+        .unwrap_or_else(|| default_appearance(symbol));
+    let color = egui::Color32::from_rgb(
+        appearance.color[0],
+        appearance.color[1],
+        appearance.color[2],
+    );
+    ui.horizontal(|ui| {
+        let radius = (5.0 * settings.element_legend_sphere_scale).clamp(3.0, 16.0);
+        let item_height = (radius * 2.0 + 3.0).max(settings.element_legend_label_size + 3.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(radius * 2.0 + 7.0, item_height),
+            egui::Sense::hover(),
+        );
+        let center = rect.center();
+        let painter = ui.painter();
+        painter.circle_filled(
+            center + egui::vec2(-1.1, 1.2),
+            radius,
+            color.gamma_multiply(0.48),
+        );
+        painter.circle(
+            center,
+            radius,
+            color,
+            egui::Stroke::new(0.5, egui::Color32::BLACK),
+        );
+        ui.label(
+            egui::RichText::new(symbol)
+                .size(settings.element_legend_label_size)
+                .color(egui::Color32::from_rgb(
+                    settings.element_legend_text_color[0],
+                    settings.element_legend_text_color[1],
+                    settings.element_legend_text_color[2],
+                )),
+        );
+    });
 }
 
 fn app_header(ui: &mut egui::Ui) {
@@ -1010,6 +1113,25 @@ fn ui_view_tab(
                 AxisLabelFont::Monospace.label(),
             );
         });
+    });
+    section(ui, "ELEMENT LEGEND", |ui| {
+        ui.checkbox(&mut settings.show_element_legend, "Show visible elements");
+        ui.horizontal(|ui| {
+            ui.label("Text color");
+            ui.color_edit_button_srgb(&mut settings.element_legend_text_color);
+        });
+        labeled_slider(
+            ui,
+            "Label size",
+            &mut settings.element_legend_label_size,
+            10.0..=30.0,
+        );
+        labeled_slider(
+            ui,
+            "Sphere size",
+            &mut settings.element_legend_sphere_scale,
+            0.5..=4.0,
+        );
     });
     section(ui, "BACKGROUND", |ui| {
         ui.horizontal(|ui| {

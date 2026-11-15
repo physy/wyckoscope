@@ -471,6 +471,7 @@ impl CellLineStyle {
 }
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct VisualSettings {
     pub(crate) supercell: [u32; 3],
     pub(crate) expand_symmetry: bool,
@@ -498,6 +499,10 @@ pub(crate) struct VisualSettings {
     pub(crate) axis_colors: [[u8; 3]; 3],
     pub(crate) axis_label_size: f32,
     pub(crate) axis_label_font: AxisLabelFont,
+    pub(crate) show_element_legend: bool,
+    pub(crate) element_legend_text_color: [u8; 3],
+    pub(crate) element_legend_label_size: f32,
+    pub(crate) element_legend_sphere_scale: f32,
     pub(crate) projection_blend: f32,
     pub(crate) hdr_tonemapping: bool,
     pub(crate) lighting: LightingSettings,
@@ -534,6 +539,10 @@ impl Default for VisualSettings {
             axis_colors: [[235, 31, 31], [31, 184, 51], [31, 82, 245]],
             axis_label_size: 20.0,
             axis_label_font: AxisLabelFont::Monospace,
+            show_element_legend: false,
+            element_legend_text_color: [0, 0, 0],
+            element_legend_label_size: 20.0,
+            element_legend_sphere_scale: 2.5,
             projection_blend: 1.0,
             hdr_tonemapping: false,
             lighting: LightingSettings::default(),
