@@ -89,6 +89,9 @@ pub(crate) fn interface(
                         &mut selection,
                         &mut dirty,
                     ),
+                    InspectorTab::Vectors => {
+                        ui_vectors_tab(ui, &mut settings, &selection, &mut dirty)
+                    }
                     InspectorTab::View => {
                         let (orbit, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
@@ -263,9 +266,11 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
         .spacing([6.0, 6.0])
         .show(ui, |ui| {
             tab_button(ui, active, InspectorTab::Structure, "Structure");
-            tab_button(ui, active, InspectorTab::View, "View");
+            tab_button(ui, active, InspectorTab::Vectors, "Vectors");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::View, "View");
             tab_button(ui, active, InspectorTab::Elements, "Elements");
+            ui.end_row();
             tab_button(ui, active, InspectorTab::Export, "Export");
             ui.end_row();
         });
@@ -296,18 +301,24 @@ fn ui_structure_tab(
 ) {
     ui.add_space(12.0);
     let opening = dialogs.open_receiver.is_some();
-    if ui
-        .add_enabled(
-            !opening,
-            egui::Button::new(if opening {
-                "Opening file dialog…"
-            } else {
-                "Open structure"
-            })
-            .min_size(egui::vec2(ui.available_width(), 38.0)),
+    let open_button_width = ui.available_width();
+    let response = ui
+        .scope_builder(
+            egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                ui.add_enabled(
+                    !opening,
+                    egui::Button::new(if opening {
+                        "Opening file dialog…"
+                    } else {
+                        "Open structure"
+                    })
+                    .min_size(egui::vec2(open_button_width, 38.0)),
+                )
+            },
         )
-        .clicked()
-    {
+        .inner;
+    if response.clicked() {
         request_open_dialog(dialogs);
     }
     ui.label(
@@ -450,7 +461,6 @@ fn ui_structure_tab(
         }
     });
     ui_selection_controls(ui, selection, dirty);
-    ui_atom_vector_controls(ui, state, settings, selection, dirty);
     if !state.structure.warnings.is_empty() {
         section(ui, "IMPORT NOTES", |ui| {
             for warning in &state.structure.warnings {
@@ -548,14 +558,14 @@ fn ui_selection_controls(
     });
 }
 
-fn ui_atom_vector_controls(
+fn ui_vectors_tab(
     ui: &mut egui::Ui,
-    state: &AppState,
     settings: &mut VisualSettings,
     selection: &SelectionState,
     dirty: &mut SceneDirty,
 ) {
     section(ui, "ATOMIC VECTORS / SPINS", |ui| {
+        let vector_count = settings.vectors.layers.len();
         ui.label(
             egui::RichText::new(
                 "Axial vectors represent magnetic moments. Site vectors follow spatial symmetry.",
@@ -563,68 +573,56 @@ fn ui_atom_vector_controls(
             .size(11.0)
             .color(TEXT_SECONDARY),
         );
-        let imported_count = state
-            .structure
-            .atoms
-            .iter()
-            .filter(|atom| atom.magnetic_moment.is_some())
-            .count();
-        if imported_count > 0 {
-            ui.label(
-                egui::RichText::new(format!("Loaded {imported_count} mCIF magnetic moment(s)."))
+        ui.add_space(4.0);
+        ui.columns(2, |columns| {
+            columns[0].label(
+                egui::RichText::new("TARGET")
                     .size(11.0)
+                    .strong()
                     .color(ACCENT),
             );
-            if ui
-                .checkbox(&mut settings.show_imported_moments, "Show imported moments")
-                .changed()
-            {
-                dirty.mark(false);
+            if let Some(atom) = selection.atoms.first() {
+                columns[0].label(
+                    egui::RichText::new(format!("{} {}", atom.element, atom.label))
+                        .size(12.0)
+                        .color(TEXT_PRIMARY),
+                );
+                columns[0].label(
+                    egui::RichText::new("Selected in the 3D view")
+                        .size(11.0)
+                        .color(TEXT_SECONDARY),
+                );
+            } else {
+                columns[0].label(
+                    egui::RichText::new("Select an atom in the 3D view")
+                        .size(11.0)
+                        .color(TEXT_SECONDARY),
+                );
             }
-            if settings.show_imported_moments {
-                ui.horizontal(|ui| {
-                    ui.label("Imported moment color");
-                    if ui
-                        .color_edit_button_srgb(&mut settings.imported_moment_color)
-                        .changed()
-                    {
-                        dirty.mark(false);
-                    }
-                });
-                if labeled_slider(
-                    ui,
-                    "Imported moment length",
-                    &mut settings.imported_moment_scale,
-                    0.05..=2.5,
-                ) {
-                    dirty.mark(false);
-                }
-                if labeled_slider(
-                    ui,
-                    "Imported shaft width",
-                    &mut settings.imported_moment_shaft_radius,
-                    0.01..=0.30,
-                ) {
-                    dirty.mark(false);
-                }
-                if labeled_slider(
-                    ui,
-                    "Imported head length",
-                    &mut settings.imported_moment_head_length,
-                    0.15..=3.0,
-                ) {
-                    dirty.mark(false);
-                }
-                if labeled_slider(
-                    ui,
-                    "Imported head width",
-                    &mut settings.imported_moment_head_radius,
-                    0.15..=3.0,
-                ) {
-                    dirty.mark(false);
-                }
-            }
-            panel_divider(ui);
+
+            columns[1].label(
+                egui::RichText::new("VECTOR DEFINITIONS")
+                    .size(11.0)
+                    .strong()
+                    .color(ACCENT),
+            );
+            columns[1].label(
+                egui::RichText::new(format!(
+                    "{vector_count} vector{}",
+                    if vector_count == 1 { "" } else { "s" }
+                ))
+                .size(12.0)
+                .color(TEXT_PRIMARY),
+            );
+        });
+        panel_divider(ui);
+        if labeled_slider(
+            ui,
+            "Vector display scale",
+            &mut settings.vectors.display_scale,
+            0.05..=10.0,
+        ) {
+            dirty.mark(false);
         }
         if let Some(atom) = selection.atoms.first() {
             ui.horizontal_wrapped(|ui| {
@@ -632,14 +630,14 @@ fn ui_atom_vector_controls(
                     .button(format!("Add site vector: {}", atom.label))
                     .clicked()
                 {
-                    settings.atom_vectors.push(AtomVector::for_site(atom));
+                    settings.vectors.layers.push(VectorLayer::for_site(atom));
                     dirty.mark(false);
                 }
                 if ui
                     .button(format!("Add selected atom: {}", atom.label))
                     .clicked()
                 {
-                    settings.atom_vectors.push(AtomVector::for_atom(atom));
+                    settings.vectors.layers.push(VectorLayer::for_atom(atom));
                     dirty.mark(false);
                 }
             });
@@ -653,7 +651,13 @@ fn ui_atom_vector_controls(
             );
         }
         let mut remove = None;
-        for (index, vector) in settings.atom_vectors.iter_mut().enumerate() {
+        for (index, vector) in settings.vectors.layers.iter_mut().enumerate() {
+            let target = match &vector.target {
+                VectorTarget::Site { label, element } => format!("{element} {label}"),
+                VectorTarget::IndividualAtom { label, element, .. } => {
+                    format!("{element} {label}")
+                }
+            };
             egui::Frame::NONE
                 .fill(CARD_BACKGROUND)
                 .stroke(egui::Stroke::new(1.0, CARD_STROKE))
@@ -662,16 +666,14 @@ fn ui_atom_vector_controls(
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
+                        if ui.checkbox(&mut vector.enabled, "").changed() {
+                            dirty.mark(false);
+                        }
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} vector · {} {}",
-                                vector.attachment.label(),
-                                vector.element,
-                                vector.label
-                            ))
-                            .size(12.0)
-                            .strong()
-                            .color(ACCENT),
+                            egui::RichText::new(format!("{} · {target}", vector.target.label(),))
+                                .size(12.0)
+                                .strong()
+                                .color(ACCENT),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Remove").clicked() {
@@ -679,35 +681,83 @@ fn ui_atom_vector_controls(
                             }
                         });
                     });
-                    if vector3_control(ui, "Moment (u, v, w)", &mut vector.components, 0.05) {
+                    ui.horizontal(|ui| {
+                        ui.label("Type");
+                        let before = vector.kind;
+                        egui::ComboBox::from_id_salt(("vector_kind", index))
+                            .selected_text(vector.kind.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut vector.kind,
+                                    VectorKind::Axial,
+                                    VectorKind::Axial.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut vector.kind,
+                                    VectorKind::Polar,
+                                    VectorKind::Polar.label(),
+                                );
+                            });
+                        if vector.kind != before {
+                            dirty.mark(false);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Coordinates");
+                        let before = vector.coordinates;
+                        egui::ComboBox::from_id_salt(("vector_coordinates", index))
+                            .selected_text(vector.coordinates.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut vector.coordinates,
+                                    VectorCoordinates::Lattice,
+                                    VectorCoordinates::Lattice.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut vector.coordinates,
+                                    VectorCoordinates::Cartesian,
+                                    VectorCoordinates::Cartesian.label(),
+                                );
+                            });
+                        if vector.coordinates != before {
+                            dirty.mark(false);
+                        }
+                    });
+                    if vector3_control(ui, "Components", &mut vector.components, 0.05) {
                         dirty.mark(false);
                     }
-                    if labeled_slider(ui, "Length", &mut vector.scale, 0.05..=5.0) {
+                    if labeled_slider(ui, "Length", &mut vector.style.scale, 0.05..=5.0) {
                         dirty.mark(false);
                     }
-                    if labeled_slider(ui, "Shaft width", &mut vector.shaft_radius, 0.01..=0.30) {
+                    if labeled_slider(
+                        ui,
+                        "Shaft width",
+                        &mut vector.style.shaft_radius,
+                        0.01..=0.30,
+                    ) {
                         dirty.mark(false);
                     }
-                    if labeled_slider(ui, "Head length", &mut vector.head_length, 0.15..=3.0) {
+                    if labeled_slider(ui, "Head length", &mut vector.style.head_length, 0.15..=3.0)
+                    {
                         dirty.mark(false);
                     }
-                    if labeled_slider(ui, "Head width", &mut vector.head_radius, 0.15..=3.0) {
+                    if labeled_slider(ui, "Head width", &mut vector.style.head_radius, 0.15..=3.0) {
                         dirty.mark(false);
                     }
                     ui.horizontal(|ui| {
                         ui.label("Color");
-                        if ui.color_edit_button_srgb(&mut vector.color).changed() {
+                        if ui.color_edit_button_srgb(&mut vector.style.color).changed() {
                             dirty.mark(false);
                         }
                         if ui
-                            .checkbox(&mut vector.penetrate_atom, "Penetrate atom")
+                            .checkbox(&mut vector.style.penetrate_atom, "Penetrate atom")
                             .changed()
                         {
                             dirty.mark(false);
                         }
                     });
                     if ui
-                        .checkbox(&mut vector.add_atom_radius, "Offset by atom radius")
+                        .checkbox(&mut vector.style.add_atom_radius, "Offset by atom radius")
                         .changed()
                     {
                         dirty.mark(false);
@@ -716,7 +766,7 @@ fn ui_atom_vector_controls(
             ui.add_space(7.0);
         }
         if let Some(index) = remove {
-            settings.atom_vectors.remove(index);
+            settings.vectors.layers.remove(index);
             dirty.mark(false);
         }
     });
@@ -758,7 +808,7 @@ fn ui_view_tab(
             orbit.reset();
         }
         ui.label(
-            egui::RichText::new("Left drag: free rotate · Shift/right drag: move · Wheel: zoom")
+            egui::RichText::new("Left drag: rotate · Shift/right drag: move · Wheel: zoom")
                 .size(11.0)
                 .color(TEXT_SECONDARY),
         );
@@ -777,20 +827,6 @@ fn ui_view_tab(
                 settings.projection_blend = 1.0;
             }
         });
-        if ui
-            .add_sized(
-                [ui.available_width(), 27.0],
-                egui::Button::new("Standard perspective"),
-            )
-            .clicked()
-        {
-            settings.projection_blend = 0.0;
-        }
-        ui.label(
-            egui::RichText::new("Strong perspective  <  standard  >  parallel")
-                .size(11.0)
-                .color(TEXT_SECONDARY),
-        );
     });
     section(ui, "ORIENTATION AXES", |ui| {
         ui.horizontal(|ui| {
@@ -1128,8 +1164,8 @@ fn ui_lighting_controls(
         .clicked()
     {
         *lighting = LightingSettings::default();
-        *exposure_ev = 7.5;
-        *hdr_tonemapping = true;
+        *exposure_ev = VisualSettings::default().exposure_ev;
+        *hdr_tonemapping = VisualSettings::default().hdr_tonemapping;
     }
 
     section(ui, "AMBIENT LIGHT", |ui| {
@@ -1182,11 +1218,6 @@ fn ui_lighting_controls(
                     "Elevation around camera (°)",
                     &mut lighting.key_follow_elevation,
                     -89.0..=89.0,
-                );
-                ui.label(
-                    egui::RichText::new("Zoom does not change the light distance or brightness.")
-                        .size(11.0)
-                        .color(TEXT_SECONDARY),
                 );
             }
             LightMode::World => {
@@ -1301,11 +1332,6 @@ fn ui_lighting_controls(
     section(ui, "CAMERA EXPOSURE", |ui| {
         labeled_slider(ui, "Exposure EV", exposure_ev, 4.0..=13.0);
         ui.checkbox(hdr_tonemapping, "HDR tonemapping");
-        ui.label(
-            egui::RichText::new("Lower EV makes the scene brighter.")
-                .size(11.0)
-                .color(TEXT_SECONDARY),
-        );
     });
 }
 
@@ -1449,14 +1475,20 @@ fn ui_export_tab(
             });
         let busy = dialogs.save_receiver.is_some() || export.stage.is_some() || export.capturing;
         ui.add_space(14.0);
-        if ui
-            .add_enabled(
-                !busy,
-                egui::Button::new(if busy { "Exporting…" } else { "Export PNG" })
-                    .min_size(egui::vec2(ui.available_width(), 40.0)),
+        let export_button_width = ui.available_width();
+        let response = ui
+            .scope_builder(
+                egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
+                |ui| {
+                    ui.add_enabled(
+                        !busy,
+                        egui::Button::new(if busy { "Exporting…" } else { "Export PNG" })
+                            .min_size(egui::vec2(export_button_width, 40.0)),
+                    )
+                },
             )
-            .clicked()
-        {
+            .inner;
+        if response.clicked() {
             request_save_dialog(dialogs, settings.export_size);
         }
         if let Some(message) = &export.message {

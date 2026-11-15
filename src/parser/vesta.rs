@@ -92,6 +92,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
                     parse_number(parts[6], "STRUC z")?,
                 ),
                 symmetry_rotation: Mat3::IDENTITY,
+                symmetry_time_reversal: 1.0,
                 magnetic_moment: None,
             };
             atoms.push(atom);
@@ -336,7 +337,7 @@ fn parse_vectors(
         {
             let style = styles.get(&vector_index).copied().unwrap_or(VectorStyle {
                 color: [237, 68, 83],
-                penetrate_atom: false,
+                penetrate_atom: true,
                 add_atom_radius: true,
             });
             vectors.push(ImportedVector {

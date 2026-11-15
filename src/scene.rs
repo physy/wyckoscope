@@ -12,7 +12,7 @@ use bevy::{
 use bevy_egui::PrimaryEguiContext;
 use wyckoscope::{
     elements::{self, ElementStyle},
-    model::{AtomSite, CrystalStructure},
+    model::{AtomSite, CrystalStructure, UnitCell},
 };
 
 use crate::{AXIS_RENDER_LAYER, MAX_RENDER_ATOMS, camera::update_camera_transform, state::*};
@@ -330,7 +330,7 @@ pub(crate) fn rebuild_scene(
             label: atom.label.clone(),
             fractional,
             symmetry_rotation: atom.symmetry_rotation,
-            magnetic_moment: atom.magnetic_moment,
+            symmetry_time_reversal: atom.symmetry_time_reversal,
             occupancy: atom.occupancy,
         });
     };
@@ -526,17 +526,22 @@ pub(crate) fn rebuild_scene(
         }
     }
 
-    if settings.show_imported_moments {
+    for vector in settings
+        .vectors
+        .layers
+        .iter()
+        .filter(|vector| vector.enabled)
+    {
         let material = materials.add(StandardMaterial {
             base_color: Color::srgb_u8(
-                settings.imported_moment_color[0],
-                settings.imported_moment_color[1],
-                settings.imported_moment_color[2],
+                vector.style.color[0],
+                vector.style.color[1],
+                vector.style.color[2],
             ),
             emissive: Color::srgb_u8(
-                settings.imported_moment_color[0],
-                settings.imported_moment_color[1],
-                settings.imported_moment_color[2],
+                vector.style.color[0],
+                vector.style.color[1],
+                vector.style.color[2],
             )
             .to_linear()
                 * 0.10,
@@ -544,67 +549,11 @@ pub(crate) fn rebuild_scene(
             perceptual_roughness: 0.24,
             ..default()
         });
-        let style = AtomVector {
-            attachment: VectorAttachment::IndividualAtom,
-            label: String::new(),
-            element: String::new(),
-            position: None,
-            components: [0.0; 3],
-            coordinates: VectorCoordinates::Cartesian,
-            color: settings.imported_moment_color,
-            scale: settings.imported_moment_scale,
-            shaft_radius: settings.imported_moment_shaft_radius,
-            head_length: settings.imported_moment_head_length,
-            head_radius: settings.imported_moment_head_radius,
-            penetrate_atom: false,
-            add_atom_radius: true,
-        };
         for atom in render_atoms
             .iter()
-            .filter(|atom| atom.magnetic_moment.is_some())
+            .filter(|atom| vector_matches_atom(&vector.target, atom))
         {
-            let radius = resolved_style(&atom.element, &overrides).display_radius
-                * settings.atom_scale
-                * atom.occupancy.max(0.15).cbrt();
-            spawn_atom_vector(
-                &mut commands,
-                cylinder_mesh.clone(),
-                arrow_head_mesh.clone(),
-                material.clone(),
-                atom.position,
-                crystal_to_world(atom.magnetic_moment.expect("filtered for moments")),
-                radius,
-                &style,
-            );
-        }
-    }
-
-    for vector in &settings.atom_vectors {
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(vector.color[0], vector.color[1], vector.color[2]),
-            emissive: Color::srgb_u8(vector.color[0], vector.color[1], vector.color[2]).to_linear()
-                * 0.10,
-            metallic: 0.12,
-            perceptual_roughness: 0.24,
-            ..default()
-        });
-        for atom in render_atoms
-            .iter()
-            .filter(|atom| vector_matches_atom(vector, atom))
-        {
-            let mut source_vector = Vec3::from_array(vector.components);
-            if vector.attachment == VectorAttachment::Site
-                && vector.coordinates == VectorCoordinates::Lattice
-            {
-                let parity = atom.symmetry_rotation.determinant().signum();
-                source_vector = atom.symmetry_rotation * source_vector * parity;
-            }
-            let direction = match vector.coordinates {
-                VectorCoordinates::Lattice => {
-                    crystal_to_world(structure.cell.fractional_to_cartesian(source_vector))
-                }
-                VectorCoordinates::Cartesian => crystal_to_world(source_vector),
-            };
+            let direction = resolved_vector_direction(vector, atom, &structure.cell);
             let radius = resolved_style(&atom.element, &overrides).display_radius
                 * settings.atom_scale
                 * atom.occupancy.max(0.15).cbrt();
@@ -616,7 +565,8 @@ pub(crate) fn rebuild_scene(
                 atom.position,
                 direction,
                 radius,
-                vector,
+                &vector.style,
+                settings.vectors.display_scale,
             );
         }
     }
@@ -801,15 +751,46 @@ fn polyhedron_material(settings: &VisualSettings) -> StandardMaterial {
     }
 }
 
-fn vector_matches_atom(vector: &AtomVector, atom: &RenderAtom) -> bool {
-    match vector.attachment {
-        VectorAttachment::Site => atom.label == vector.label,
-        VectorAttachment::IndividualAtom => {
-            atom.element == vector.element
-                && atom.label == vector.label
-                && vector
-                    .position
-                    .is_some_and(|position| position.distance_squared(atom.position) < 1.0e-8)
+fn vector_matches_atom(target: &VectorTarget, atom: &RenderAtom) -> bool {
+    match target {
+        VectorTarget::Site { label, .. } => atom.label == *label,
+        VectorTarget::IndividualAtom {
+            label,
+            element,
+            position,
+        } => {
+            atom.element == *element
+                && atom.label == *label
+                && position.distance_squared(atom.position) < 1.0e-8
+        }
+    }
+}
+
+fn resolved_vector_direction(vector: &VectorLayer, atom: &RenderAtom, cell: &UnitCell) -> Vec3 {
+    let source = Vec3::from_array(vector.components);
+    let applies_site_symmetry = matches!(&vector.target, VectorTarget::Site { .. });
+    let axial_factor = match vector.kind {
+        VectorKind::Axial => {
+            atom.symmetry_rotation.determinant().signum() * atom.symmetry_time_reversal
+        }
+        VectorKind::Polar => 1.0,
+    };
+    match vector.coordinates {
+        VectorCoordinates::Lattice => {
+            let transformed = if applies_site_symmetry {
+                atom.symmetry_rotation * source * axial_factor
+            } else {
+                source
+            };
+            crystal_to_world(cell.fractional_to_cartesian(transformed))
+        }
+        VectorCoordinates::Cartesian => {
+            let transformed = if applies_site_symmetry {
+                cell.symmetry_to_cartesian(atom.symmetry_rotation) * source * axial_factor
+            } else {
+                source
+            };
+            crystal_to_world(transformed)
         }
     }
 }
@@ -823,15 +804,15 @@ fn spawn_atom_vector(
     origin: Vec3,
     vector: Vec3,
     atom_radius: f32,
-    style: &AtomVector,
+    style: &VectorStyle,
+    display_scale: f32,
 ) {
-    let vector_length = vector.length() * style.scale;
+    let vector_length = vector.length() * style.scale * display_scale;
     if vector_length < 1.0e-4 {
         return;
     }
     let direction = vector.normalize();
-    let head_length =
-        ((vector_length * 0.26).clamp(0.16, 0.55) * style.head_length).min(vector_length.max(0.01));
+    let head_length = (0.55 * style.head_length).min(vector_length.max(0.01));
     let (start, tip) = if style.penetrate_atom {
         // VESTA draws a penetrating arrow symmetrically about the atom centre:
         // the full arrow is twice the scaled vector modulus. When the atom
@@ -1198,8 +1179,14 @@ pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, V
 mod tests {
     use super::{
         canonical_fractional, crystal_to_world, periodic_image_count, periodic_image_offsets,
+        resolved_vector_direction,
     };
-    use bevy::prelude::Vec3;
+    use bevy::prelude::{Mat3, Vec3};
+    use wyckoscope::model::UnitCell;
+
+    use crate::state::{
+        RenderAtom, VectorCoordinates, VectorKind, VectorLayer, VectorStyle, VectorTarget,
+    };
 
     #[test]
     fn fills_all_shared_boundaries_of_a_supercell() {
@@ -1229,5 +1216,47 @@ mod tests {
         let b = crystal_to_world(Vec3::Y);
         let c = crystal_to_world(Vec3::Z);
         assert!(a.cross(b).dot(c) > 0.999);
+    }
+
+    #[test]
+    fn axial_site_vectors_apply_magnetic_time_reversal_but_polar_vectors_do_not() {
+        let cell = UnitCell::new(1.0, 1.0, 1.0, 90.0, 90.0, 90.0);
+        let atom = RenderAtom {
+            position: Vec3::ZERO,
+            element: "Fe".to_string(),
+            label: "Fe1".to_string(),
+            fractional: Vec3::ZERO,
+            symmetry_rotation: Mat3::IDENTITY,
+            symmetry_time_reversal: -1.0,
+            occupancy: 1.0,
+        };
+        let mut vector = VectorLayer {
+            enabled: true,
+            target: VectorTarget::Site {
+                label: "Fe1".to_string(),
+                element: "Fe".to_string(),
+            },
+            kind: VectorKind::Axial,
+            components: [0.0, 0.0, 1.0],
+            coordinates: VectorCoordinates::Cartesian,
+            style: VectorStyle {
+                color: [255, 0, 0],
+                scale: 1.0,
+                shaft_radius: 0.1,
+                head_length: 1.0,
+                head_radius: 1.0,
+                penetrate_atom: true,
+                add_atom_radius: false,
+            },
+        };
+        assert_eq!(
+            resolved_vector_direction(&vector, &atom, &cell),
+            crystal_to_world(-Vec3::Z)
+        );
+        vector.kind = VectorKind::Polar;
+        assert_eq!(
+            resolved_vector_direction(&vector, &atom, &cell),
+            crystal_to_world(Vec3::Z)
+        );
     }
 }

@@ -108,6 +108,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
             fractional: wrap01(fractional),
             occupancy,
             symmetry_rotation: Mat3::IDENTITY,
+            symmetry_time_reversal: 1.0,
             magnetic_moment,
         });
     }
@@ -130,6 +131,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
                 let mut expanded = atom.clone();
                 expanded.fractional = fractional;
                 expanded.symmetry_rotation = operation.matrix;
+                expanded.symmetry_time_reversal = operation.time_reversal;
                 expanded.magnetic_moment = atom.magnetic_moment.map(|moment| {
                     operation.time_reversal
                         * operation.matrix.determinant().signum()

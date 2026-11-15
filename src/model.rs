@@ -9,6 +9,9 @@ pub struct AtomSite {
     /// Rotational part of the symmetry operation that generated this atom.
     /// This is used to transform axial vectors attached to a crystallographic site.
     pub symmetry_rotation: Mat3,
+    /// Magnetic time-reversal part of the symmetry operation that generated
+    /// this atom. It is `1.0` for ordinary space groups.
+    pub symmetry_time_reversal: f32,
     /// Magnetic moment in the crystallographic Cartesian frame, in μB when read from mCIF.
     pub magnetic_moment: Option<Vec3>,
 }

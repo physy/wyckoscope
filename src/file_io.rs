@@ -147,6 +147,17 @@ fn apply_imported_visuals(
     if let Some(background) = visuals.background {
         settings.background = background;
     }
+    // Every source format produces ordinary, editable vectors. The source
+    // format is retained by the structure, not by a separate vector UI path.
+    settings.vectors.layers.clear();
+    settings
+        .vectors
+        .layers
+        .extend(structure.asymmetric_atoms.iter().filter_map(|atom| {
+            atom.magnetic_moment.map(|moment| {
+                VectorLayer::magnetic_moment_site(atom.label.clone(), atom.element.clone(), moment)
+            })
+        }));
     if structure.source_format == wyckoscope::model::SourceFormat::Vesta {
         settings.bond_match_mode = BondMatchMode::Element;
         settings.bond_rules = visuals
@@ -161,33 +172,23 @@ fn apply_imported_visuals(
                 show_polyhedra: rule.show_polyhedra,
             })
             .collect();
-        settings.atom_vectors = visuals
+        settings
             .vectors
-            .iter()
-            .filter_map(|vector| {
+            .layers
+            .extend(visuals.vectors.iter().filter_map(|vector| {
                 let atom = structure
                     .asymmetric_atoms
                     .iter()
                     .find(|atom| atom.label == vector.label)?;
-                Some(AtomVector {
-                    attachment: VectorAttachment::Site,
-                    label: vector.label.clone(),
-                    element: atom.element.clone(),
-                    position: None,
-                    components: vector.components.to_array(),
-                    coordinates: VectorCoordinates::Cartesian,
-                    color: vector.color,
-                    scale: vector.scale,
-                    // `VECTT`'s size is a VESTA display parameter, not a
-                    // calibrated world-space radius. Preserve Wyckoscope's
-                    // readable vector geometry instead of treating it as Å.
-                    shaft_radius: 0.180,
-                    head_length: 1.0,
-                    head_radius: 2.5,
-                    penetrate_atom: vector.penetrate_atom,
-                    add_atom_radius: vector.add_atom_radius,
-                })
-            })
-            .collect();
+                Some(VectorLayer::imported_site(
+                    vector.label.clone(),
+                    atom.element.clone(),
+                    vector.components.to_array(),
+                    vector.color,
+                    vector.scale,
+                    vector.penetrate_atom,
+                    vector.add_atom_radius,
+                ))
+            }));
     }
 }

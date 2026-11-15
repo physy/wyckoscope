@@ -18,6 +18,7 @@ pub(crate) struct AppState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InspectorTab {
     Structure,
+    Vectors,
     View,
     Elements,
     Export,
@@ -69,35 +70,63 @@ impl Default for BondRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VectorAttachment {
-    Site,
-    IndividualAtom,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VectorCoordinates {
     Lattice,
     Cartesian,
 }
 
-impl VectorAttachment {
+impl VectorCoordinates {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Site => "Site",
-            Self::IndividualAtom => "Atom",
+            Self::Lattice => "Lattice [u v w]",
+            Self::Cartesian => "Cartesian (x, y, z)",
+        }
+    }
+}
+
+/// VESTA-compatible symmetry behavior for vectors attached to a site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VectorKind {
+    Axial,
+    Polar,
+}
+
+impl VectorKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Axial => "Axial vector",
+            Self::Polar => "Polar vector",
+        }
+    }
+}
+
+/// The atom(s) a vector is attached to. All vectors use this same attachment
+/// model, regardless of whether their initial values came from an mCIF, VESTA,
+/// or the user.
+#[derive(Debug, Clone)]
+pub(crate) enum VectorTarget {
+    Site {
+        label: String,
+        element: String,
+    },
+    IndividualAtom {
+        label: String,
+        element: String,
+        position: Vec3,
+    },
+}
+
+impl VectorTarget {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Site { .. } => "Site vector",
+            Self::IndividualAtom { .. } => "Atom vector",
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AtomVector {
-    pub(crate) attachment: VectorAttachment,
-    pub(crate) label: String,
-    pub(crate) element: String,
-    pub(crate) position: Option<Vec3>,
-    /// Components in lattice-vector notation, (u, v, w).
-    pub(crate) components: [f32; 3],
-    pub(crate) coordinates: VectorCoordinates,
+pub(crate) struct VectorStyle {
     pub(crate) color: [u8; 3],
     /// Multiplier for the physical vector length.
     pub(crate) scale: f32,
@@ -111,40 +140,128 @@ pub(crate) struct AtomVector {
     pub(crate) add_atom_radius: bool,
 }
 
-impl AtomVector {
-    pub(crate) fn for_site(atom: &SelectedAtom) -> Self {
+impl VectorStyle {
+    fn annotation_default() -> Self {
         Self {
-            attachment: VectorAttachment::Site,
-            label: atom.label.clone(),
-            element: atom.element.clone(),
-            position: None,
-            components: [0.0, 0.0, 1.0],
-            coordinates: VectorCoordinates::Lattice,
             color: [237, 68, 83],
             scale: 2.1,
             shaft_radius: 0.180,
             head_length: 1.0,
             head_radius: 2.5,
-            penetrate_atom: false,
+            penetrate_atom: true,
             add_atom_radius: true,
+        }
+    }
+
+    fn magnetic_moment_default() -> Self {
+        Self {
+            color: [237, 68, 83],
+            scale: 0.7,
+            shaft_radius: 0.170,
+            head_length: 0.85,
+            head_radius: 2.3,
+            penetrate_atom: true,
+            add_atom_radius: true,
+        }
+    }
+}
+
+/// A single renderable vector definition and its attachment target.
+#[derive(Debug, Clone)]
+pub(crate) struct VectorLayer {
+    pub(crate) enabled: bool,
+    pub(crate) target: VectorTarget,
+    pub(crate) kind: VectorKind,
+    /// Components expressed in `coordinates`.
+    pub(crate) components: [f32; 3],
+    pub(crate) coordinates: VectorCoordinates,
+    pub(crate) style: VectorStyle,
+}
+
+impl VectorLayer {
+    pub(crate) fn for_site(atom: &SelectedAtom) -> Self {
+        Self {
+            enabled: true,
+            target: VectorTarget::Site {
+                label: atom.label.clone(),
+                element: atom.element.clone(),
+            },
+            kind: VectorKind::Axial,
+            components: [0.0, 0.0, 1.0],
+            coordinates: VectorCoordinates::Lattice,
+            style: VectorStyle::annotation_default(),
         }
     }
 
     pub(crate) fn for_atom(atom: &SelectedAtom) -> Self {
         Self {
-            attachment: VectorAttachment::IndividualAtom,
-            label: atom.label.clone(),
-            element: atom.element.clone(),
-            position: Some(atom.position),
+            enabled: true,
+            target: VectorTarget::IndividualAtom {
+                label: atom.label.clone(),
+                element: atom.element.clone(),
+                position: atom.position,
+            },
+            kind: VectorKind::Axial,
             components: [0.0, 0.0, 1.0],
             coordinates: VectorCoordinates::Lattice,
-            color: [237, 68, 83],
-            scale: 2.1,
-            shaft_radius: 0.180,
-            head_length: 1.0,
-            head_radius: 2.5,
-            penetrate_atom: false,
-            add_atom_radius: true,
+            style: VectorStyle::annotation_default(),
+        }
+    }
+
+    pub(crate) fn imported_site(
+        label: String,
+        element: String,
+        components: [f32; 3],
+        color: [u8; 3],
+        scale: f32,
+        penetrate_atom: bool,
+        add_atom_radius: bool,
+    ) -> Self {
+        Self {
+            enabled: true,
+            target: VectorTarget::Site { label, element },
+            kind: VectorKind::Axial,
+            components,
+            coordinates: VectorCoordinates::Cartesian,
+            style: VectorStyle {
+                color,
+                scale,
+                // `VECTT`'s size is a VESTA display parameter, not a
+                // calibrated world-space radius. Preserve Wyckoscope's
+                // readable vector geometry instead of treating it as Å.
+                shaft_radius: 0.180,
+                head_length: 1.0,
+                head_radius: 2.5,
+                penetrate_atom,
+                add_atom_radius,
+            },
+        }
+    }
+
+    pub(crate) fn magnetic_moment_site(label: String, element: String, moment: Vec3) -> Self {
+        Self {
+            enabled: true,
+            target: VectorTarget::Site { label, element },
+            kind: VectorKind::Axial,
+            components: moment.to_array(),
+            coordinates: VectorCoordinates::Cartesian,
+            style: VectorStyle::magnetic_moment_default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VectorSettings {
+    /// A presentation-only multiplier applied uniformly to every vector.
+    pub(crate) display_scale: f32,
+    pub(crate) layers: Vec<VectorLayer>,
+}
+
+impl Default for VectorSettings {
+    fn default() -> Self {
+        Self {
+            display_scale: 1.0,
+            layers: Vec::new(),
         }
     }
 }
@@ -315,8 +432,6 @@ pub(crate) struct VisualSettings {
     pub(crate) tab: InspectorTab,
     pub(crate) supercell: [u32; 3],
     pub(crate) expand_symmetry: bool,
-    /// Draw periodic copies of sites that lie on the lower boundary at the
-    /// corresponding upper boundary of the displayed supercell.
     pub(crate) show_boundary_atoms: bool,
     pub(crate) atom_scale: f32,
     pub(crate) bond_radius: f32,
@@ -328,13 +443,7 @@ pub(crate) struct VisualSettings {
     pub(crate) show_polyhedra: bool,
     pub(crate) polyhedron_color: [u8; 3],
     pub(crate) polyhedron_opacity: f32,
-    pub(crate) atom_vectors: Vec<AtomVector>,
-    pub(crate) show_imported_moments: bool,
-    pub(crate) imported_moment_color: [u8; 3],
-    pub(crate) imported_moment_scale: f32,
-    pub(crate) imported_moment_shaft_radius: f32,
-    pub(crate) imported_moment_head_length: f32,
-    pub(crate) imported_moment_head_radius: f32,
+    pub(crate) vectors: VectorSettings,
     pub(crate) unit_cell_display: UnitCellDisplay,
     pub(crate) unit_cell_line_style: CellLineStyle,
     pub(crate) unit_cell_line_width: f32,
@@ -371,13 +480,7 @@ impl Default for VisualSettings {
             show_polyhedra: false,
             polyhedron_color: [74, 164, 255],
             polyhedron_opacity: 0.30,
-            atom_vectors: Vec::new(),
-            show_imported_moments: true,
-            imported_moment_color: [237, 68, 83],
-            imported_moment_scale: 0.35,
-            imported_moment_shaft_radius: 0.045,
-            imported_moment_head_length: 1.0,
-            imported_moment_head_radius: 1.0,
+            vectors: VectorSettings::default(),
             unit_cell_display: UnitCellDisplay::All,
             unit_cell_line_style: CellLineStyle::Solid,
             unit_cell_line_width: 0.6,
@@ -545,7 +648,7 @@ pub(crate) struct RenderAtom {
     pub(crate) label: String,
     pub(crate) fractional: Vec3,
     pub(crate) symmetry_rotation: Mat3,
-    pub(crate) magnetic_moment: Option<Vec3>,
+    pub(crate) symmetry_time_reversal: f32,
     pub(crate) occupancy: f32,
 }
 
