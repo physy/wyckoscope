@@ -1235,6 +1235,15 @@ fn ui_view_tab(
         if labeled_slider(ui, "Global atom scale", &mut settings.atom_scale, 0.4..=2.0) {
             dirty.mark(false);
         }
+        if labeled_slider(ui, "Metallic", &mut settings.atom_metallic, 0.0..=1.0) {
+            dirty.mark(false);
+        }
+        if labeled_slider(ui, "Roughness", &mut settings.atom_roughness, 0.0..=1.0) {
+            dirty.mark(false);
+        }
+        if labeled_slider(ui, "Reflectance", &mut settings.atom_reflectance, 0.0..=1.0) {
+            dirty.mark(false);
+        }
         ui.horizontal(|ui| {
             ui.label("Atoms");
             egui::ComboBox::from_id_salt("atom_display_mode")

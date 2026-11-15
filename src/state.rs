@@ -491,6 +491,9 @@ pub(crate) struct VisualSettings {
     pub(crate) expand_symmetry: bool,
     pub(crate) show_boundary_atoms: bool,
     pub(crate) atom_scale: f32,
+    pub(crate) atom_metallic: f32,
+    pub(crate) atom_roughness: f32,
+    pub(crate) atom_reflectance: f32,
     pub(crate) bond_radius: f32,
     pub(crate) bond_match_mode: BondMatchMode,
     pub(crate) bond_rules: Vec<BondRule>,
@@ -531,6 +534,9 @@ impl Default for VisualSettings {
             expand_symmetry: true,
             show_boundary_atoms: true,
             atom_scale: 0.8,
+            atom_metallic: 0.08,
+            atom_roughness: 0.21,
+            atom_reflectance: 0.56,
             bond_radius: 0.095,
             bond_match_mode: BondMatchMode::Element,
             bond_rules: Vec::new(),
@@ -567,10 +573,21 @@ impl Default for VisualSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct ElementAppearance {
     pub(crate) color: [u8; 3],
     pub(crate) radius: f32,
     pub(crate) visible: bool,
+}
+
+impl Default for ElementAppearance {
+    fn default() -> Self {
+        Self {
+            color: [160, 160, 160],
+            radius: 1.0,
+            visible: true,
+        }
+    }
 }
 
 #[derive(Resource, Default, Clone, Serialize, Deserialize)]

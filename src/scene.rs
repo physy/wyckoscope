@@ -373,7 +373,7 @@ pub(crate) fn rebuild_scene(
         let style = resolved_style(&atom.element, &overrides);
         let material = atom_materials
             .entry(atom.element.clone())
-            .or_insert_with(|| create_atom_material(&mut materials, style))
+            .or_insert_with(|| create_atom_material(&mut materials, style, &settings))
             .clone();
         let mut radius =
             style.display_radius * settings.atom_scale * atom.occupancy.max(0.15).cbrt();
@@ -1064,13 +1064,14 @@ pub(crate) fn default_appearance(symbol: &str) -> ElementAppearance {
 fn create_atom_material(
     materials: &mut Assets<StandardMaterial>,
     style: ElementStyle,
+    settings: &VisualSettings,
 ) -> Handle<StandardMaterial> {
     materials.add(StandardMaterial {
         base_color: style.color,
         emissive: style.color.to_linear() * 0.035,
-        metallic: 0.08,
-        perceptual_roughness: 0.21,
-        reflectance: 0.56,
+        metallic: settings.atom_metallic,
+        perceptual_roughness: settings.atom_roughness,
+        reflectance: settings.atom_reflectance,
         ..default()
     })
 }
