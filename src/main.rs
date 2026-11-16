@@ -36,6 +36,10 @@ pub(crate) const AXIS_VIEW_SIZE: f32 = 180.0;
 pub(crate) const AXIS_VIEW_MARGIN: f32 = 18.0;
 pub(crate) const AXIS_RENDER_LAYER: usize = 1;
 pub(crate) const MAX_RENDER_ATOMS: u64 = 150_000;
+/// Keep enough room for the scene and its overlay legend beside the inspector.
+pub(crate) const MIN_RENDER_WIDTH: f32 = 640.0;
+pub(crate) const MIN_RENDER_HEIGHT: f32 = 420.0;
+const MIN_INSPECTOR_WIDTH: f32 = 480.0;
 
 fn main() {
     let structure = parser::parse_text(SAMPLE_CIF, "cif").expect("bundled sample CIF is valid");
@@ -78,6 +82,11 @@ fn main() {
                 resolution: WindowResolution::new(1440, 900),
                 present_mode: PresentMode::AutoVsync,
                 resizable: true,
+                resize_constraints: WindowResizeConstraints {
+                    min_width: MIN_INSPECTOR_WIDTH + MIN_RENDER_WIDTH,
+                    min_height: MIN_RENDER_HEIGHT,
+                    ..default()
+                },
                 ..default()
             }),
             ..default()

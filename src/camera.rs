@@ -205,6 +205,21 @@ pub(crate) fn update_camera_viewports(
     >,
 ) {
     let physical_size = window.resolution.physical_size();
+    // During minimization and some resize transitions winit briefly reports a
+    // zero-sized surface. A 1×1 viewport is not valid for that target either,
+    // so disable every 3D camera until the surface has a real extent again.
+    if physical_size.x == 0 || physical_size.y == 0 {
+        main_camera.is_active = false;
+        main_camera.viewport = None;
+        background_camera.is_active = false;
+        background_camera.viewport = None;
+        axis_camera.is_active = false;
+        axis_camera.viewport = None;
+        return;
+    }
+
+    main_camera.is_active = true;
+    background_camera.is_active = true;
     let scale_factor = window.scale_factor();
     let panel_width = (layout.width * scale_factor).round() as u32;
     let render_x = panel_width.min(physical_size.x.saturating_sub(1));
@@ -221,10 +236,19 @@ pub(crate) fn update_camera_viewports(
     background_camera.viewport = Some(render_viewport);
 
     let margin = (AXIS_VIEW_MARGIN * scale_factor).round() as u32;
+    let available_axis_width = render_size.x.saturating_sub(margin.saturating_mul(2));
+    let available_axis_height = render_size.y.saturating_sub(margin.saturating_mul(2));
+    if available_axis_width == 0 || available_axis_height == 0 {
+        axis_camera.is_active = false;
+        axis_camera.viewport = None;
+        return;
+    }
+
+    axis_camera.is_active = true;
     let desired_size = (AXIS_VIEW_SIZE * scale_factor).round() as u32;
     let axis_size = desired_size
-        .min(render_size.x.saturating_sub(margin.saturating_mul(2)))
-        .min(render_size.y.saturating_sub(margin.saturating_mul(2)))
+        .min(available_axis_width)
+        .min(available_axis_height)
         .max(1);
     axis_camera.viewport = Some(Viewport {
         physical_position: UVec2::new(

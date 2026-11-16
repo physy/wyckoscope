@@ -5,7 +5,7 @@ use bevy_egui::{EguiContexts, egui};
 use egui_text_outline::OutlinedLabel;
 
 use crate::{
-    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE,
+    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, MIN_RENDER_WIDTH,
     file_io::{
         request_open_dialog, request_project_open_dialog, request_project_save_dialog,
         request_save_dialog,
@@ -76,11 +76,12 @@ pub(crate) fn interface(
         *interface_font_registered = true;
     }
     configure_egui_style(ctx);
+    let max_panel_width = (ctx.content_rect().width() - MIN_RENDER_WIDTH).clamp(260.0, 560.0);
     let panel = egui::SidePanel::left("inspector")
         .resizable(true)
         .default_width(layout.width)
         .min_width(260.0)
-        .max_width(560.0)
+        .max_width(max_panel_width)
         .frame(
             egui::Frame::NONE
                 .fill(panel_background())
