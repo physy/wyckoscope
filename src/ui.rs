@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use egui_text_outline::OutlinedLabel;
 
 use crate::{
     AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE,
@@ -10,7 +11,10 @@ use crate::{
         request_save_dialog,
     },
     project::{ProjectHistory, UndoRedoRequests},
-    scene::{crystal_to_world, default_appearance, periodic_image_count, view_directions},
+    scene::{
+        crystal_to_world, default_appearance, measurement_label, periodic_image_count,
+        scene_object_position, view_directions,
+    },
     state::*,
 };
 
@@ -60,7 +64,10 @@ pub(crate) fn interface(
     mut history_requests: ResMut<UndoRedoRequests>,
     mut dirty: ResMut<SceneDirty>,
     mut layout: ResMut<InspectorLayout>,
-    mut camera: Single<(&mut OrbitCamera, &Transform), With<OrbitCamera>>,
+    mut camera: Single<
+        (&mut OrbitCamera, &Transform, &Camera, &GlobalTransform),
+        With<OrbitCamera>,
+    >,
     mut interface_font_registered: Local<bool>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -104,12 +111,15 @@ pub(crate) fn interface(
                         &mut selection,
                         &mut dirty,
                     ),
+                    InspectorTab::Objects => {
+                        ui_objects_tab(ui, &state, &mut settings, &mut selection, &mut dirty)
+                    }
                     InspectorTab::Vectors => {
                         ui_vectors_tab(ui, &state, &mut settings, &selection, &mut dirty)
                     }
                     InspectorTab::Bonds => ui_bonds_tab(ui, &state, &mut settings, &mut dirty),
                     InspectorTab::View => {
-                        let (orbit, _) = &mut *camera;
+                        let (orbit, _, _, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
                     }
                     InspectorTab::Elements => {
@@ -118,9 +128,17 @@ pub(crate) fn interface(
                 });
         });
     layout.width = panel.response.rect.width();
-    let (_, camera_transform) = &*camera;
+    let (_, camera_transform, render_camera, camera_global_transform) = &*camera;
     draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
     draw_element_legend(ctx, &state, &settings, &overrides, layout.width);
+    draw_scene_object_labels(
+        ctx,
+        &state,
+        &settings,
+        render_camera,
+        camera_global_transform,
+        layout.width,
+    );
     structure_selection_dialog(ctx, &mut structure_selection);
     if let Some(error) = state.error.clone() {
         egui::Window::new("Could not open structure")
@@ -380,6 +398,141 @@ fn draw_element_legend(
         });
 }
 
+fn draw_scene_object_labels(
+    ctx: &egui::Context,
+    state: &AppState,
+    settings: &VisualSettings,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    panel_width: f32,
+) {
+    let supercell = settings.supercell.map(|value| value.max(1));
+    let total_vector = state.structure.cell.vectors[0] * supercell[0] as f32
+        + state.structure.cell.vectors[1] * supercell[1] as f32
+        + state.structure.cell.vectors[2] * supercell[2] as f32;
+    let crystal_center = crystal_to_world(total_vector * 0.5);
+    let content = ctx.content_rect();
+    for object in settings
+        .scene_objects
+        .objects
+        .iter()
+        .filter(|object| object.visible)
+    {
+        let (
+            text,
+            position,
+            font_size,
+            show_background,
+            background_color,
+            background_opacity,
+            show_outline,
+            outline_color,
+            outline_width,
+        ) = match &object.kind {
+            SceneObjectKind::Label {
+                text,
+                font_size,
+                show_background,
+                background_color,
+                background_opacity,
+                show_outline,
+                outline_color,
+                outline_width,
+            } => (
+                text.clone(),
+                scene_object_position(object, &state.structure, crystal_center),
+                *font_size,
+                *show_background,
+                *background_color,
+                *background_opacity,
+                *show_outline,
+                *outline_color,
+                *outline_width,
+            ),
+            SceneObjectKind::Measurement {
+                kind,
+                points,
+                label_size,
+                show_background,
+                background_color,
+                background_opacity,
+                show_outline,
+                outline_color,
+                outline_width,
+                ..
+            } => {
+                let Some((text, position)) =
+                    measurement_label(*kind, points, &state.structure.cell, crystal_center)
+                else {
+                    continue;
+                };
+                (
+                    text,
+                    position,
+                    *label_size,
+                    *show_background,
+                    *background_color,
+                    *background_opacity,
+                    *show_outline,
+                    *outline_color,
+                    *outline_width,
+                )
+            }
+            _ => continue,
+        };
+        let Ok(viewport) = camera.world_to_viewport_with_depth(camera_transform, position) else {
+            continue;
+        };
+        let screen = egui::pos2(viewport.x, viewport.y);
+        if screen.x < panel_width || !content.contains(screen) {
+            continue;
+        }
+        let text_color = egui::Color32::from_rgba_unmultiplied(
+            object.color[0],
+            object.color[1],
+            object.color[2],
+            (object.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        let fill = show_background.then(|| {
+            egui::Color32::from_rgba_unmultiplied(
+                background_color[0],
+                background_color[1],
+                background_color[2],
+                (background_opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+            )
+        });
+        let outline = show_outline.then(|| {
+            egui::Stroke::new(
+                outline_width,
+                egui::Color32::from_rgb(outline_color[0], outline_color[1], outline_color[2]),
+            )
+        });
+        egui::Area::new(egui::Id::new(("scene_object_label", object.id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .interactable(false)
+            .show(ctx, |ui| {
+                let mut frame = egui::Frame::NONE;
+                if let Some(fill) = fill {
+                    frame = frame
+                        .fill(fill)
+                        .corner_radius(2.0)
+                        .inner_margin(egui::Margin::symmetric(4, 2));
+                }
+                frame.show(ui, |ui| {
+                    let mut label = OutlinedLabel::new(text)
+                        .font(egui::FontId::proportional(font_size))
+                        .text_color(text_color);
+                    if let Some(outline) = outline {
+                        label = label.outline(outline);
+                    }
+                    ui.add(label);
+                });
+            });
+    }
+}
+
 fn draw_element_legend_item(
     ui: &mut egui::Ui,
     symbol: &str,
@@ -464,9 +617,10 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
             tab_button(ui, active, InspectorTab::File, "File");
             tab_button(ui, active, InspectorTab::Structure, "Structure");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::Objects, "Objects");
             tab_button(ui, active, InspectorTab::Vectors, "Vectors");
-            tab_button(ui, active, InspectorTab::Bonds, "Bonds");
             ui.end_row();
+            tab_button(ui, active, InspectorTab::Bonds, "Bonds");
             tab_button(ui, active, InspectorTab::View, "View");
             tab_button(ui, active, InspectorTab::Elements, "Elements");
             ui.end_row();
@@ -724,7 +878,7 @@ fn ui_selection_controls(
     section(ui, "SELECTION & MEASUREMENT", |ui| {
         ui.label(
             egui::RichText::new(
-                "Click an atom to select it. Shift-click adds or removes atoms (up to 3).",
+                "Click an atom to select it. Shift-click adds or removes atoms (up to 4).",
             )
             .size(11.0)
             .color(TEXT_SECONDARY),
@@ -797,8 +951,438 @@ fn ui_selection_controls(
                 );
             }
         }
+        if let [first, second, third, fourth] = selection.atoms.as_slice()
+            && let Some(dihedral) = dihedral_degrees(
+                first.position,
+                second.position,
+                third.position,
+                fourth.position,
+            )
+        {
+            ui.label(
+                egui::RichText::new(format!("Dihedral (1–2–3–4): {dihedral:.3}°"))
+                    .size(12.0)
+                    .strong()
+                    .color(ACCENT),
+            );
+        }
         if ui.button("Clear selection").clicked() {
             selection.atoms.clear();
+            dirty.mark(false);
+        }
+    });
+}
+
+fn dihedral_degrees(first: Vec3, second: Vec3, third: Vec3, fourth: Vec3) -> Option<f32> {
+    let first_bond = second - first;
+    let middle_bond = third - second;
+    let second_bond = fourth - third;
+    let normal_a = first_bond.cross(middle_bond).normalize_or_zero();
+    let normal_b = middle_bond.cross(second_bond).normalize_or_zero();
+    let axis = middle_bond.normalize_or_zero();
+    (normal_a.length_squared() > 0.0
+        && normal_b.length_squared() > 0.0
+        && axis.length_squared() > 0.0)
+        .then(|| {
+            axis.dot(normal_a.cross(normal_b))
+                .atan2(normal_a.dot(normal_b))
+                .to_degrees()
+        })
+}
+
+fn ui_objects_tab(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    settings: &mut VisualSettings,
+    selection: &mut SelectionState,
+    dirty: &mut SceneDirty,
+) {
+    section(ui, "SCENE OBJECTS", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (label, kind) in [
+                (
+                    "Ground",
+                    SceneObjectKind::Ground {
+                        size: 30.0,
+                        metallic: 0.2,
+                        roughness: 0.44,
+                    },
+                ),
+                (
+                    "Label",
+                    SceneObjectKind::Label {
+                        text: "Label".to_owned(),
+                        font_size: 24.0,
+                        show_background: false,
+                        background_color: [255, 255, 255],
+                        background_opacity: 1.0,
+                        show_outline: true,
+                        outline_color: [255, 255, 255],
+                        outline_width: 2.0,
+                    },
+                ),
+                (
+                    "Crystal plane",
+                    SceneObjectKind::CrystalPlane {
+                        miller: [1, 0, 0],
+                        offset: 0.5,
+                        size: 8.0,
+                        show_normal: true,
+                        normal_length: 2.0,
+                    },
+                ),
+                (
+                    "Arrow",
+                    SceneObjectKind::Arrow {
+                        direction: ArrowDirection::Cartesian([0.0, 1.0, 0.0]),
+                        shaft_radius: 0.08,
+                        head_length: 0.35,
+                        head_radius: 0.18,
+                    },
+                ),
+                ("Marker", SceneObjectKind::Marker { radius: 0.25 }),
+                ("Sphere", SceneObjectKind::Sphere { radius: 0.5 }),
+                (
+                    "Box",
+                    SceneObjectKind::Box {
+                        size: [1.0, 1.0, 1.0],
+                    },
+                ),
+                (
+                    "Cylinder",
+                    SceneObjectKind::Cylinder {
+                        radius: 0.35,
+                        height: 1.0,
+                    },
+                ),
+                (
+                    "Cone",
+                    SceneObjectKind::Cone {
+                        radius: 0.45,
+                        height: 1.0,
+                    },
+                ),
+                (
+                    "Box frame",
+                    SceneObjectKind::BoundingBox {
+                        size: [2.0, 2.0, 2.0],
+                        line_radius: 0.03,
+                    },
+                ),
+                (
+                    "Line",
+                    SceneObjectKind::Line {
+                        start: [-1.0, 0.0, 0.0],
+                        end: [1.0, 0.0, 0.0],
+                        radius: 0.035,
+                    },
+                ),
+                (
+                    "Polyline",
+                    SceneObjectKind::Polyline {
+                        points: vec![[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+                        radius: 0.035,
+                    },
+                ),
+            ] {
+                if ui.button(format!("+ {label}")).clicked() {
+                    if matches!(kind, SceneObjectKind::CrystalPlane { .. }) {
+                        settings
+                            .scene_objects
+                            .add_anchored(kind, SceneObjectAnchor::Crystal);
+                    } else {
+                        settings.scene_objects.add(kind);
+                    }
+                    dirty.mark(false);
+                }
+            }
+        });
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Measurements from selected atoms").color(TEXT_SECONDARY));
+            for kind in [
+                MeasurementKind::Distance,
+                MeasurementKind::Angle,
+                MeasurementKind::Dihedral,
+            ] {
+                let enabled = selection.atoms.len() >= kind.point_count();
+                if ui
+                    .add_enabled(enabled, egui::Button::new(format!("+ {}", kind.label())))
+                    .clicked()
+                {
+                    let points = selection
+                        .atoms
+                        .iter()
+                        .take(kind.point_count())
+                        .map(|atom| MeasurementPoint {
+                            site_id: atom.site_id,
+                            fractional: atom.fractional.to_array(),
+                        })
+                        .collect();
+                    settings.scene_objects.add(SceneObjectKind::Measurement {
+                        kind,
+                        points,
+                        radius: 0.028,
+                        label_size: 20.0,
+                        show_background: false,
+                        background_color: [255, 255, 255],
+                        background_opacity: 1.0,
+                        show_outline: true,
+                        outline_color: [255, 255, 255],
+                        outline_width: 5.0,
+                    });
+                    dirty.mark(false);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        let mut remove = None;
+        let mut duplicate = None;
+        let mut changed = false;
+        for object in &mut settings.scene_objects.objects {
+            egui::CollapsingHeader::new(format!("{} · {}", object.kind.label(), object.name))
+                .id_salt(object.id)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut object.visible, "Visible").changed();
+                        if ui.button("Duplicate").clicked() {
+                            duplicate = Some(object.clone());
+                        }
+                        if ui.button("Remove").clicked() {
+                            remove = Some(object.id);
+                        }
+                    });
+                    changed |= ui.text_edit_singleline(&mut object.name).changed();
+                    let supports_position = !matches!(object.kind, SceneObjectKind::Measurement { .. });
+                    if supports_position {
+                        ui.horizontal(|ui| {
+                            ui.label("Anchor");
+                            let before = object.anchor;
+                            egui::ComboBox::from_id_salt(("anchor", object.id))
+                                .selected_text(object.anchor.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut object.anchor,
+                                        SceneObjectAnchor::World,
+                                        "World",
+                                    );
+                                    ui.selectable_value(
+                                        &mut object.anchor,
+                                        SceneObjectAnchor::Crystal,
+                                        "Crystal",
+                                    );
+                                    ui.separator();
+                                    for site in &state.structure.atoms {
+                                        let selected = matches!(
+                                            object.anchor,
+                                            SceneObjectAnchor::Atom { site_id } if site_id == site.site_id
+                                        );
+                                        if ui
+                                            .selectable_label(selected, format!("Atom · {}", site.label))
+                                            .clicked()
+                                        {
+                                            object.anchor = SceneObjectAnchor::Atom {
+                                                site_id: site.site_id,
+                                            };
+                                        }
+                                    }
+                                });
+                            changed |= object.anchor != before;
+                        });
+                    }
+                    let supports_rotation = matches!(
+                        object.kind,
+                        SceneObjectKind::Ground { .. }
+                            | SceneObjectKind::CrystalPlane { .. }
+                            | SceneObjectKind::Arrow { .. }
+                            | SceneObjectKind::Box { .. }
+                            | SceneObjectKind::Cylinder { .. }
+                            | SceneObjectKind::Cone { .. }
+                            | SceneObjectKind::BoundingBox { .. }
+                            | SceneObjectKind::Line { .. }
+                            | SceneObjectKind::Polyline { .. }
+                    );
+                    if supports_position {
+                        changed |= vector3_control(ui, "Position", &mut object.position, 0.05);
+                    }
+                    if supports_rotation {
+                        changed |= vector3_control(ui, "Rotation XYZ (°)", &mut object.rotation, 1.0);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Color");
+                        changed |= ui.color_edit_button_srgb(&mut object.color).changed();
+                    });
+                    changed |= labeled_slider(ui, "Opacity", &mut object.opacity, 0.05..=1.0);
+                    match &mut object.kind {
+                        SceneObjectKind::Ground { size, metallic, roughness } => {
+                            changed |= labeled_slider(ui, "Size", size, 1.0..=200.0);
+                            changed |= labeled_slider(ui, "Metallic", metallic, 0.0..=1.0);
+                            changed |= labeled_slider(ui, "Roughness", roughness, 0.0..=1.0);
+                        }
+                        SceneObjectKind::Label {
+                            text,
+                            font_size,
+                            show_background,
+                            background_color,
+                            background_opacity,
+                            show_outline,
+                            outline_color,
+                            outline_width,
+                        } => {
+                            changed |= ui.text_edit_singleline(text).changed();
+                            changed |= labeled_slider(ui, "Font size", font_size, 8.0..=96.0);
+                            changed |= label_background_controls(
+                                ui,
+                                show_background,
+                                background_color,
+                                background_opacity,
+                            );
+                            changed |= label_outline_controls(
+                                ui,
+                                show_outline,
+                                outline_color,
+                                outline_width,
+                            );
+                        }
+                        SceneObjectKind::CrystalPlane {
+                            miller,
+                            offset,
+                            size,
+                            show_normal,
+                            normal_length,
+                        } => {
+                            changed |= integer_vector3_control(ui, "Miller (h k l)", miller);
+                            changed |= labeled_slider(ui, "Plane offset", offset, -4.0..=4.0);
+                            changed |= labeled_slider(ui, "Size", size, 0.2..=100.0);
+                            changed |= ui.checkbox(show_normal, "Show normal").changed();
+                            changed |= labeled_slider(ui, "Normal length", normal_length, 0.1..=20.0);
+                        }
+                        SceneObjectKind::Arrow { direction, shaft_radius, head_length, head_radius } => {
+                            ui.horizontal(|ui| {
+                                ui.label("Direction source");
+                                egui::ComboBox::from_id_salt(("arrow_direction", object.id))
+                                    .selected_text(direction.label())
+                                    .show_ui(ui, |ui| {
+                                        if ui.selectable_label(matches!(direction, ArrowDirection::Cartesian(_)), "Cartesian (x y z)").clicked() {
+                                            *direction = ArrowDirection::Cartesian([0.0, 1.0, 0.0]);
+                                            changed = true;
+                                        }
+                                        if ui.selectable_label(matches!(direction, ArrowDirection::CrystalDirection(_)), "Crystal direction [u v w]").clicked() {
+                                            *direction = ArrowDirection::CrystalDirection([1, 0, 0]);
+                                            changed = true;
+                                        }
+                                        if ui.selectable_label(matches!(direction, ArrowDirection::PlaneNormal(_)), "Plane normal (h k l)").clicked() {
+                                            *direction = ArrowDirection::PlaneNormal([1, 0, 0]);
+                                            changed = true;
+                                        }
+                                    });
+                            });
+                            match direction {
+                                ArrowDirection::Cartesian(values) => {
+                                    changed |= vector3_control(ui, "Direction", values, 0.05);
+                                }
+                                ArrowDirection::CrystalDirection(indices) => {
+                                    changed |= integer_vector3_control(ui, "Direction [u v w]", indices);
+                                }
+                                ArrowDirection::PlaneNormal(indices) => {
+                                    changed |= integer_vector3_control(ui, "Plane normal (h k l)", indices);
+                                }
+                            }
+                            changed |= labeled_slider(ui, "Shaft radius", shaft_radius, 0.01..=0.4);
+                            changed |= labeled_slider(ui, "Head length", head_length, 0.05..=2.0);
+                            changed |= labeled_slider(ui, "Head radius", head_radius, 0.02..=1.0);
+                        }
+                        SceneObjectKind::Marker { radius } | SceneObjectKind::Sphere { radius } => {
+                            changed |= labeled_slider(ui, "Radius", radius, 0.02..=5.0);
+                        }
+                        SceneObjectKind::Box { size } => {
+                            changed |= vector3_control(ui, "Size", size, 0.05);
+                        }
+                        SceneObjectKind::BoundingBox { size, line_radius } => {
+                            changed |= vector3_control(ui, "Size", size, 0.05);
+                            changed |= labeled_slider(ui, "Line radius", line_radius, 0.005..=0.2);
+                        }
+                        SceneObjectKind::Line { start, end, radius } => {
+                            changed |= vector3_control(ui, "Start", start, 0.05);
+                            changed |= vector3_control(ui, "End", end, 0.05);
+                            changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                        }
+                        SceneObjectKind::Polyline { points, radius } => {
+                            changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                            let mut remove_point = None;
+                            let can_remove_point = points.len() > 2;
+                            for (index, point) in points.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    changed |= vector3_control(ui, &format!("Point {}", index + 1), point, 0.05);
+                                    if can_remove_point && ui.small_button("−").clicked() {
+                                        remove_point = Some(index);
+                                    }
+                                });
+                            }
+                            if let Some(index) = remove_point {
+                                points.remove(index);
+                                changed = true;
+                            }
+                            if ui.small_button("+ Point").clicked() {
+                                points.push([0.0, 0.0, 0.0]);
+                                changed = true;
+                            }
+                        }
+                        SceneObjectKind::Measurement {
+                            kind,
+                            points,
+                            radius,
+                            label_size,
+                            show_background,
+                            background_color,
+                            background_opacity,
+                            show_outline,
+                            outline_color,
+                            outline_width,
+                        } => {
+                            ui.label(format!("{} atom references", points.len()));
+                            changed |= labeled_slider(ui, "Line radius", radius, 0.002..=0.3);
+                            changed |= labeled_slider(ui, "Label size", label_size, 8.0..=72.0);
+                            changed |= label_background_controls(
+                                ui,
+                                show_background,
+                                background_color,
+                                background_opacity,
+                            );
+                            changed |= label_outline_controls(
+                                ui,
+                                show_outline,
+                                outline_color,
+                                outline_width,
+                            );
+                            if points.len() != kind.point_count() {
+                                ui.label(egui::RichText::new("Incomplete measurement").color(WARNING));
+                            }
+                        }
+                        SceneObjectKind::Cylinder { radius, height } | SceneObjectKind::Cone { radius, height } => {
+                            changed |= labeled_slider(ui, "Radius", radius, 0.02..=5.0);
+                            changed |= labeled_slider(ui, "Height", height, 0.02..=10.0);
+                        }
+                    }
+                });
+        }
+        if let Some(id) = remove {
+            settings
+                .scene_objects
+                .objects
+                .retain(|object| object.id != id);
+            settings.scene_objects.selected = None;
+            changed = true;
+        }
+        if let Some(mut object) = duplicate {
+            object.id = settings.scene_objects.next_id;
+            settings.scene_objects.next_id += 1;
+            object.name.push_str(" copy");
+            settings.scene_objects.selected = Some(object.id);
+            settings.scene_objects.objects.push(object);
+            changed = true;
+        }
+        if changed {
             dirty.mark(false);
         }
     });
@@ -1264,15 +1848,6 @@ fn ui_view_tab(
                 });
         });
         ui_unit_cell_controls(ui, settings, dirty);
-        ui.horizontal(|ui| {
-            ui.label("Ground color");
-            if ui
-                .color_edit_button_srgb(&mut settings.ground_color)
-                .changed()
-            {
-                dirty.mark(false);
-            }
-        });
         egui::Grid::new("view_toggles")
             .num_columns(2)
             .spacing([18.0, 8.0])
@@ -1281,9 +1856,6 @@ fn ui_view_tab(
                     .checkbox(&mut settings.show_outlines, "Outlines")
                     .changed()
                 {
-                    dirty.mark(false);
-                }
-                if ui.checkbox(&mut settings.show_floor, "Ground").changed() {
                     dirty.mark(false);
                 }
                 ui.end_row();
@@ -1782,6 +2354,18 @@ fn vector3_control(ui: &mut egui::Ui, label: &str, values: &mut [f32; 3], speed:
     changed
 }
 
+fn integer_vector3_control(ui: &mut egui::Ui, label: &str, values: &mut [i32; 3]) -> bool {
+    ui.label(egui::RichText::new(label).size(11.0).color(TEXT_SECONDARY));
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for (axis, value) in ["H", "K", "L"].into_iter().zip(values) {
+            ui.label(axis);
+            changed |= ui.add(egui::DragValue::new(value).speed(1)).changed();
+        }
+    });
+    changed
+}
+
 fn ui_elements_tab(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -2079,6 +2663,40 @@ fn labeled_slider(
                 .changed();
         });
     });
+    changed
+}
+
+fn label_background_controls(
+    ui: &mut egui::Ui,
+    enabled: &mut bool,
+    color: &mut [u8; 3],
+    opacity: &mut f32,
+) -> bool {
+    let mut changed = ui.checkbox(enabled, "Fill label background").changed();
+    if *enabled {
+        ui.horizontal(|ui| {
+            ui.label("Background color");
+            changed |= ui.color_edit_button_srgb(color).changed();
+        });
+        changed |= labeled_slider(ui, "Background opacity", opacity, 0.0..=1.0);
+    }
+    changed
+}
+
+fn label_outline_controls(
+    ui: &mut egui::Ui,
+    enabled: &mut bool,
+    color: &mut [u8; 3],
+    width: &mut f32,
+) -> bool {
+    let mut changed = ui.checkbox(enabled, "Outline").changed();
+    if *enabled {
+        ui.horizontal(|ui| {
+            ui.label("Outline color");
+            changed |= ui.color_edit_button_srgb(color).changed();
+        });
+        changed |= labeled_slider(ui, "Outline width", width, 0.5..=5.0);
+    }
     changed
 }
 

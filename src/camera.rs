@@ -99,7 +99,7 @@ pub(crate) fn select_atom(
             {
                 selection.atoms.remove(index);
             } else {
-                if selection.atoms.len() == 3 {
+                if selection.atoms.len() == 4 {
                     selection.atoms.remove(0);
                 }
                 selection.atoms.push(picked);

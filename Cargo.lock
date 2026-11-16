@@ -2342,6 +2342,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-text-outline"
+version = "0.1.0"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6367,6 +6374,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "cryspglib",
+ "egui-text-outline",
  "rfd",
  "serde",
  "serde_json",

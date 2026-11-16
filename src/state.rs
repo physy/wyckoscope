@@ -28,10 +28,225 @@ pub(crate) struct StructureSelection {
 pub(crate) enum InspectorTab {
     File,
     Structure,
+    Objects,
     Vectors,
     Bonds,
     View,
     Elements,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SceneObjectAnchor {
+    World,
+    Crystal,
+    /// Local coordinates are expressed in fractional lattice units relative
+    /// to this asymmetric crystallographic site.
+    Atom {
+        site_id: SiteId,
+    },
+}
+
+impl SceneObjectAnchor {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::World => "World",
+            Self::Crystal => "Crystal",
+            Self::Atom { .. } => "Atom",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum SceneObjectKind {
+    Ground {
+        size: f32,
+        metallic: f32,
+        roughness: f32,
+    },
+    Label {
+        text: String,
+        font_size: f32,
+        show_background: bool,
+        background_color: [u8; 3],
+        background_opacity: f32,
+        show_outline: bool,
+        outline_color: [u8; 3],
+        outline_width: f32,
+    },
+    CrystalPlane {
+        miller: [i32; 3],
+        offset: f32,
+        size: f32,
+        show_normal: bool,
+        normal_length: f32,
+    },
+    Arrow {
+        direction: ArrowDirection,
+        shaft_radius: f32,
+        head_length: f32,
+        head_radius: f32,
+    },
+    Marker {
+        radius: f32,
+    },
+    Sphere {
+        radius: f32,
+    },
+    Box {
+        size: [f32; 3],
+    },
+    Cylinder {
+        radius: f32,
+        height: f32,
+    },
+    Cone {
+        radius: f32,
+        height: f32,
+    },
+    BoundingBox {
+        size: [f32; 3],
+        line_radius: f32,
+    },
+    Line {
+        start: [f32; 3],
+        end: [f32; 3],
+        radius: f32,
+    },
+    Polyline {
+        points: Vec<[f32; 3]>,
+        radius: f32,
+    },
+    Measurement {
+        kind: MeasurementKind,
+        points: Vec<MeasurementPoint>,
+        radius: f32,
+        label_size: f32,
+        show_background: bool,
+        background_color: [u8; 3],
+        background_opacity: f32,
+        show_outline: bool,
+        outline_color: [u8; 3],
+        outline_width: f32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum ArrowDirection {
+    Cartesian([f32; 3]),
+    CrystalDirection([i32; 3]),
+    PlaneNormal([i32; 3]),
+}
+
+impl ArrowDirection {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Cartesian(_) => "Cartesian (x y z)",
+            Self::CrystalDirection(_) => "Crystal direction [u v w]",
+            Self::PlaneNormal(_) => "Plane normal (h k l)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum MeasurementKind {
+    Distance,
+    Angle,
+    Dihedral,
+}
+
+impl MeasurementKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Distance => "Distance",
+            Self::Angle => "Angle",
+            Self::Dihedral => "Dihedral",
+        }
+    }
+
+    pub(crate) fn point_count(self) -> usize {
+        match self {
+            Self::Distance => 2,
+            Self::Angle => 3,
+            Self::Dihedral => 4,
+        }
+    }
+}
+
+/// Stable source identity plus its selected periodic image. Keeping the
+/// fractional coordinate preserves measurements across scene rebuilds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct MeasurementPoint {
+    pub(crate) site_id: SiteId,
+    pub(crate) fractional: [f32; 3],
+}
+
+impl SceneObjectKind {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Ground { .. } => "Ground",
+            Self::Label { .. } => "Label",
+            Self::CrystalPlane { .. } => "Crystal plane",
+            Self::Arrow { .. } => "Arrow",
+            Self::Marker { .. } => "Marker",
+            Self::Sphere { .. } => "Sphere",
+            Self::Box { .. } => "Box",
+            Self::Cylinder { .. } => "Cylinder",
+            Self::Cone { .. } => "Cone",
+            Self::BoundingBox { .. } => "Bounding box",
+            Self::Line { .. } => "Line",
+            Self::Polyline { .. } => "Polyline",
+            Self::Measurement { kind, .. } => kind.label(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SceneObject {
+    pub(crate) id: u64,
+    pub(crate) name: String,
+    pub(crate) visible: bool,
+    pub(crate) anchor: SceneObjectAnchor,
+    pub(crate) position: [f32; 3],
+    pub(crate) rotation: [f32; 3],
+    pub(crate) color: [u8; 3],
+    pub(crate) opacity: f32,
+    pub(crate) kind: SceneObjectKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct SceneObjects {
+    pub(crate) objects: Vec<SceneObject>,
+    pub(crate) next_id: u64,
+    #[serde(skip)]
+    pub(crate) selected: Option<u64>,
+}
+
+impl SceneObjects {
+    pub(crate) fn add(&mut self, kind: SceneObjectKind) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let name = kind.label().to_string();
+        self.objects.push(SceneObject {
+            id,
+            name,
+            visible: true,
+            anchor: SceneObjectAnchor::World,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            color: [20, 20, 20],
+            opacity: 1.0,
+            kind,
+        });
+        self.selected = Some(id);
+    }
+
+    pub(crate) fn add_anchored(&mut self, kind: SceneObjectKind, anchor: SceneObjectAnchor) {
+        self.add(kind);
+        if let Some(object) = self.objects.last_mut() {
+            object.anchor = anchor;
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -494,6 +709,7 @@ pub(crate) struct VisualSettings {
     pub(crate) atom_metallic: f32,
     pub(crate) atom_roughness: f32,
     pub(crate) atom_reflectance: f32,
+    pub(crate) scene_objects: SceneObjects,
     pub(crate) bond_radius: f32,
     pub(crate) bond_match_mode: BondMatchMode,
     pub(crate) bond_rules: Vec<BondRule>,
@@ -509,10 +725,8 @@ pub(crate) struct VisualSettings {
     pub(crate) unit_cell_line_width: f32,
     pub(crate) unit_cell_color: [u8; 3],
     pub(crate) show_outlines: bool,
-    pub(crate) show_floor: bool,
     pub(crate) auto_rotate: bool,
     pub(crate) background: [u8; 3],
-    pub(crate) ground_color: [u8; 3],
     pub(crate) axis_colors: [[u8; 3]; 3],
     pub(crate) axis_label_size: f32,
     pub(crate) axis_label_font: AxisLabelFont,
@@ -537,6 +751,7 @@ impl Default for VisualSettings {
             atom_metallic: 0.08,
             atom_roughness: 0.21,
             atom_reflectance: 0.56,
+            scene_objects: SceneObjects::default(),
             bond_radius: 0.095,
             bond_match_mode: BondMatchMode::Element,
             bond_rules: Vec::new(),
@@ -552,14 +767,12 @@ impl Default for VisualSettings {
             unit_cell_line_width: 0.6,
             unit_cell_color: [0, 0, 0],
             show_outlines: true,
-            show_floor: false,
             auto_rotate: false,
             background: [255, 255, 255],
-            ground_color: [205, 211, 222],
             axis_colors: [[235, 31, 31], [31, 184, 51], [31, 82, 245]],
             axis_label_size: 20.0,
             axis_label_font: AxisLabelFont::Monospace,
-            show_element_legend: false,
+            show_element_legend: true,
             element_legend_text_color: [0, 0, 0],
             element_legend_label_size: 20.0,
             element_legend_sphere_scale: 2.5,

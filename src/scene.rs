@@ -167,7 +167,7 @@ pub(crate) fn setup(
         Name::new("Interface camera"),
         Camera2d,
         Camera {
-            order: 2,
+            order: 3,
             clear_color: ClearColorConfig::None,
             output_mode: CameraOutputMode::Write {
                 blend_state: Some(BlendState::ALPHA_BLENDING),
@@ -318,18 +318,6 @@ pub(crate) fn rebuild_scene(
         unlit: true,
         ..default()
     });
-    let floor_material = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(
-            settings.ground_color[0],
-            settings.ground_color[1],
-            settings.ground_color[2],
-        ),
-        metallic: 0.2,
-        perceptual_roughness: 0.44,
-        reflectance: 0.35,
-        ..default()
-    });
-
     let structure = &state.structure;
     let total_vector = structure.cell.vectors[0] * supercell[0] as f32
         + structure.cell.vectors[1] * supercell[1] as f32
@@ -707,24 +695,17 @@ pub(crate) fn rebuild_scene(
         .iter()
         .map(|value| value.length())
         .fold(1.0_f32, f32::max);
-    if settings.show_floor {
-        let lowest = render_atoms
-            .iter()
-            .map(|atom| atom.position.y - resolved_style(&atom.element, &overrides).display_radius)
-            .fold(0.0_f32, f32::min);
-        commands.spawn((
-            Mesh3d(
-                meshes.add(
-                    Plane3d::default()
-                        .mesh()
-                        .size(extent * 4.0 + 18.0, extent * 4.0 + 18.0),
-                ),
-            ),
-            MeshMaterial3d(floor_material),
-            Transform::from_xyz(0.0, lowest - 1.15, 0.0),
-            CrystalVisual,
-        ));
-    }
+    spawn_scene_objects(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &settings.scene_objects.objects,
+        structure,
+        center,
+        sphere_mesh.clone(),
+        cylinder_mesh.clone(),
+        arrow_head_mesh,
+    );
     let reset = dirty.reset_camera;
     dirty.reset_camera = false;
     if reset {
@@ -733,6 +714,487 @@ pub(crate) fn rebuild_scene(
         orbit.reset();
         update_camera_transform(orbit, transform);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_scene_objects(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    objects: &[SceneObject],
+    structure: &CrystalStructure,
+    crystal_center: Vec3,
+    sphere_mesh: Handle<Mesh>,
+    cylinder_mesh: Handle<Mesh>,
+    arrow_head_mesh: Handle<Mesh>,
+) {
+    for object in objects.iter().filter(|object| object.visible) {
+        let position = scene_object_position(object, structure, crystal_center);
+        let rotation = Quat::from_euler(
+            EulerRot::XYZ,
+            object.rotation[0].to_radians(),
+            object.rotation[1].to_radians(),
+            object.rotation[2].to_radians(),
+        );
+        let color = Color::srgba_u8(
+            object.color[0],
+            object.color[1],
+            object.color[2],
+            (object.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        let mut material = |metallic: f32, roughness: f32| {
+            materials.add(StandardMaterial {
+                base_color: color,
+                metallic,
+                perceptual_roughness: roughness,
+                alpha_mode: AlphaMode::Blend,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })
+        };
+
+        match &object.kind {
+            SceneObjectKind::Ground {
+                size,
+                metallic,
+                roughness,
+            } => {
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(*size, *size))),
+                    MeshMaterial3d(material(*metallic, *roughness)),
+                    Transform::from_translation(position).with_rotation(rotation),
+                    CrystalVisual,
+                ));
+            }
+            SceneObjectKind::Label { .. } => {}
+            SceneObjectKind::CrystalPlane {
+                miller,
+                offset,
+                size,
+                show_normal,
+                normal_length,
+            } => {
+                let Some((normal, offset_vector)) =
+                    miller_plane_normal(&structure.cell, *miller, *offset)
+                else {
+                    continue;
+                };
+                let origin = position + rotation * offset_vector;
+                let plane_rotation = rotation * Quat::from_rotation_arc(Vec3::Y, normal);
+                let plane_material = material(0.0, 0.55);
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(*size, *size))),
+                    MeshMaterial3d(plane_material.clone()),
+                    Transform::from_translation(origin).with_rotation(plane_rotation),
+                    CrystalVisual,
+                ));
+                if *show_normal {
+                    spawn_scene_arrow(
+                        commands,
+                        cylinder_mesh.clone(),
+                        arrow_head_mesh.clone(),
+                        plane_material,
+                        origin,
+                        rotation * normal * *normal_length,
+                        0.045,
+                        0.25,
+                        0.12,
+                    );
+                }
+            }
+            SceneObjectKind::Arrow {
+                direction,
+                shaft_radius,
+                head_length,
+                head_radius,
+            } => {
+                let vector = match direction {
+                    ArrowDirection::Cartesian(values) => Vec3::from_array(*values),
+                    ArrowDirection::CrystalDirection(indices) => {
+                        crystal_to_world(structure.cell.fractional_to_cartesian(Vec3::new(
+                            indices[0] as f32,
+                            indices[1] as f32,
+                            indices[2] as f32,
+                        )))
+                    }
+                    ArrowDirection::PlaneNormal(indices) => {
+                        let Some((normal, _)) = miller_plane_normal(&structure.cell, *indices, 0.0)
+                        else {
+                            continue;
+                        };
+                        normal
+                    }
+                };
+                if vector.length_squared() < 1.0e-8 {
+                    continue;
+                }
+                spawn_scene_arrow(
+                    commands,
+                    cylinder_mesh.clone(),
+                    arrow_head_mesh.clone(),
+                    material(0.12, 0.3),
+                    position,
+                    rotation * vector,
+                    *shaft_radius,
+                    *head_length,
+                    *head_radius,
+                );
+            }
+            SceneObjectKind::Marker { radius } | SceneObjectKind::Sphere { radius } => {
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(sphere_mesh.clone()),
+                    MeshMaterial3d(material(0.08, 0.34)),
+                    Transform::from_translation(position).with_scale(Vec3::splat(*radius)),
+                    CrystalVisual,
+                ));
+            }
+            SceneObjectKind::Box { size } => {
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(meshes.add(Cuboid::new(size[0], size[1], size[2]))),
+                    MeshMaterial3d(material(0.08, 0.38)),
+                    Transform::from_translation(position).with_rotation(rotation),
+                    CrystalVisual,
+                ));
+            }
+            SceneObjectKind::Cylinder { radius, height } => {
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(cylinder_mesh.clone()),
+                    MeshMaterial3d(material(0.08, 0.34)),
+                    Transform::from_translation(position)
+                        .with_rotation(rotation)
+                        .with_scale(Vec3::new(*radius, *height, *radius)),
+                    CrystalVisual,
+                ));
+            }
+            SceneObjectKind::Cone { radius, height } => {
+                commands.spawn((
+                    Name::new(format!("Scene object · {}", object.name)),
+                    Mesh3d(meshes.add(Cone::new(*radius, *height).mesh().resolution(32))),
+                    MeshMaterial3d(material(0.08, 0.34)),
+                    Transform::from_translation(position).with_rotation(rotation),
+                    CrystalVisual,
+                ));
+            }
+            SceneObjectKind::BoundingBox { size, line_radius } => {
+                let box_material = material(0.0, 0.4);
+                for (start, end) in object_box_edges(*size) {
+                    spawn_cylinder_between(
+                        commands,
+                        cylinder_mesh.clone(),
+                        box_material.clone(),
+                        position + rotation * start,
+                        position + rotation * end,
+                        *line_radius,
+                    );
+                }
+            }
+            SceneObjectKind::Line { start, end, radius } => {
+                let start =
+                    position + rotation * scene_object_vector(*start, object.anchor, structure);
+                let end = position + rotation * scene_object_vector(*end, object.anchor, structure);
+                spawn_cylinder_between(
+                    commands,
+                    cylinder_mesh.clone(),
+                    material(0.0, 0.35),
+                    start,
+                    end,
+                    *radius,
+                );
+            }
+            SceneObjectKind::Polyline { points, radius } => {
+                let line_material = material(0.0, 0.35);
+                for pair in points.windows(2) {
+                    let start = position
+                        + rotation * scene_object_vector(pair[0], object.anchor, structure);
+                    let end = position
+                        + rotation * scene_object_vector(pair[1], object.anchor, structure);
+                    spawn_cylinder_between(
+                        commands,
+                        cylinder_mesh.clone(),
+                        line_material.clone(),
+                        start,
+                        end,
+                        *radius,
+                    );
+                }
+            }
+            SceneObjectKind::Measurement {
+                kind,
+                points,
+                radius,
+                label_size: _,
+                ..
+            } => {
+                spawn_measurement(
+                    commands,
+                    cylinder_mesh.clone(),
+                    material(0.0, 0.3),
+                    *kind,
+                    points,
+                    *radius,
+                    &structure.cell,
+                    crystal_center,
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn scene_object_position(
+    object: &SceneObject,
+    structure: &CrystalStructure,
+    crystal_center: Vec3,
+) -> Vec3 {
+    let local = Vec3::from_array(object.position);
+    match object.anchor {
+        SceneObjectAnchor::World => local,
+        SceneObjectAnchor::Crystal => {
+            crystal_to_world(structure.cell.fractional_to_cartesian(local)) - crystal_center
+        }
+        SceneObjectAnchor::Atom { site_id } => structure
+            .atoms
+            .iter()
+            .find(|site| site.site_id == site_id)
+            .map_or(local, |site| {
+                crystal_to_world(
+                    structure
+                        .cell
+                        .fractional_to_cartesian(site.fractional + local),
+                ) - crystal_center
+            }),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_scene_arrow(
+    commands: &mut Commands,
+    cylinder_mesh: Handle<Mesh>,
+    head_mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    origin: Vec3,
+    vector: Vec3,
+    shaft_radius: f32,
+    head_length: f32,
+    head_radius: f32,
+) {
+    let length = vector.length();
+    if length < 1.0e-5 {
+        return;
+    }
+    let direction = vector / length;
+    let head_length = head_length.min(length * 0.8);
+    let shaft_end = origin + direction * (length - head_length);
+    spawn_cylinder_between(
+        commands,
+        cylinder_mesh,
+        material.clone(),
+        origin,
+        shaft_end,
+        shaft_radius,
+    );
+    commands.spawn((
+        Mesh3d(head_mesh),
+        MeshMaterial3d(material),
+        Transform::from_translation(shaft_end + direction * (head_length * 0.5))
+            .with_rotation(Quat::from_rotation_arc(Vec3::Y, direction))
+            .with_scale(Vec3::new(
+                head_radius / 0.16,
+                head_length / 0.42,
+                head_radius / 0.16,
+            )),
+        CrystalVisual,
+    ));
+}
+
+/// Returns the unit normal in renderer coordinates and the renderer-space
+/// translation to the plane `h x + k y + l z = offset`.
+fn miller_plane_normal(cell: &UnitCell, indices: [i32; 3], offset: f32) -> Option<(Vec3, Vec3)> {
+    let [a, b, c] = cell.vectors;
+    let volume = a.dot(b.cross(c));
+    if volume.abs() < 1.0e-8 {
+        return None;
+    }
+    // The reciprocal basis deliberately omits 2π: Miller planes obey
+    // h·f = n in fractional coordinates, not a diffraction wavevector scale.
+    let reciprocal = [
+        b.cross(c) / volume,
+        c.cross(a) / volume,
+        a.cross(b) / volume,
+    ];
+    let normal_cartesian = reciprocal[0] * indices[0] as f32
+        + reciprocal[1] * indices[1] as f32
+        + reciprocal[2] * indices[2] as f32;
+    let normal_squared = normal_cartesian.length_squared();
+    if normal_squared < 1.0e-8 {
+        return None;
+    }
+    Some((
+        crystal_to_world(normal_cartesian.normalize()),
+        crystal_to_world(normal_cartesian * (offset / normal_squared)),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_measurement(
+    commands: &mut Commands,
+    cylinder_mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    kind: MeasurementKind,
+    points: &[MeasurementPoint],
+    radius: f32,
+    cell: &UnitCell,
+    crystal_center: Vec3,
+) {
+    if points.len() != kind.point_count() {
+        return;
+    }
+    let points: Vec<_> = points
+        .iter()
+        .map(|point| {
+            crystal_to_world(cell.fractional_to_cartesian(Vec3::from_array(point.fractional)))
+                - crystal_center
+        })
+        .collect();
+    let mut add_segment = |start: Vec3, end: Vec3| {
+        spawn_cylinder_between(
+            commands,
+            cylinder_mesh.clone(),
+            material.clone(),
+            start,
+            end,
+            radius,
+        );
+    };
+    match kind {
+        MeasurementKind::Distance => {
+            add_segment(points[0], points[1]);
+        }
+        MeasurementKind::Angle => {
+            add_segment(points[1], points[0]);
+            add_segment(points[1], points[2]);
+        }
+        MeasurementKind::Dihedral => {
+            add_segment(points[0], points[1]);
+            add_segment(points[1], points[2]);
+            add_segment(points[2], points[3]);
+        }
+    }
+}
+
+pub(crate) fn measurement_label(
+    kind: MeasurementKind,
+    points: &[MeasurementPoint],
+    cell: &UnitCell,
+    crystal_center: Vec3,
+) -> Option<(String, Vec3)> {
+    if points.len() != kind.point_count() {
+        return None;
+    }
+    let points: Vec<_> = points
+        .iter()
+        .map(|point| {
+            crystal_to_world(cell.fractional_to_cartesian(Vec3::from_array(point.fractional)))
+                - crystal_center
+        })
+        .collect();
+    match kind {
+        MeasurementKind::Distance => Some((
+            format!("{:.3} Å", points[0].distance(points[1])),
+            (points[0] + points[1]) * 0.5,
+        )),
+        MeasurementKind::Angle => {
+            let left = (points[0] - points[1]).normalize_or_zero();
+            let right = (points[2] - points[1]).normalize_or_zero();
+            (left.length_squared() > 1.0e-8 && right.length_squared() > 1.0e-8).then(|| {
+                let angle = left.dot(right).clamp(-1.0, 1.0).acos().to_degrees();
+                let direction = (left + right).normalize_or_zero();
+                (
+                    format!("{angle:.2}°"),
+                    points[1]
+                        + direction
+                            * points[1]
+                                .distance(points[0])
+                                .min(points[1].distance(points[2]))
+                            * 0.42,
+                )
+            })
+        }
+        MeasurementKind::Dihedral => {
+            let normal_a = (points[1] - points[0])
+                .cross(points[2] - points[1])
+                .normalize_or_zero();
+            let normal_b = (points[2] - points[1])
+                .cross(points[3] - points[2])
+                .normalize_or_zero();
+            let axis = (points[2] - points[1]).normalize_or_zero();
+            (normal_a.length_squared() > 1.0e-8
+                && normal_b.length_squared() > 1.0e-8
+                && axis.length_squared() > 1.0e-8)
+                .then(|| {
+                    let angle = axis
+                        .dot(normal_a.cross(normal_b))
+                        .atan2(normal_a.dot(normal_b))
+                        .to_degrees();
+                    (
+                        format!("{angle:.2}°"),
+                        (points[1] + points[2]) * 0.5
+                            + (normal_a + normal_b).normalize_or_zero() * 0.35,
+                    )
+                })
+        }
+    }
+}
+
+fn scene_object_vector(
+    components: [f32; 3],
+    anchor: SceneObjectAnchor,
+    structure: &CrystalStructure,
+) -> Vec3 {
+    let vector = Vec3::from_array(components);
+    match anchor {
+        SceneObjectAnchor::World => vector,
+        SceneObjectAnchor::Crystal | SceneObjectAnchor::Atom { .. } => {
+            crystal_to_world(structure.cell.fractional_to_cartesian(vector))
+        }
+    }
+}
+
+fn object_box_edges(size: [f32; 3]) -> Vec<(Vec3, Vec3)> {
+    let half = Vec3::from_array(size) * 0.5;
+    let [x, y, z] = [half.x, half.y, half.z];
+    let corners = [
+        Vec3::new(-x, -y, -z),
+        Vec3::new(x, -y, -z),
+        Vec3::new(-x, y, -z),
+        Vec3::new(x, y, -z),
+        Vec3::new(-x, -y, z),
+        Vec3::new(x, -y, z),
+        Vec3::new(-x, y, z),
+        Vec3::new(x, y, z),
+    ];
+    [
+        (0, 1),
+        (0, 2),
+        (1, 3),
+        (2, 3),
+        (4, 5),
+        (4, 6),
+        (5, 7),
+        (6, 7),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ]
+    .into_iter()
+    .map(|(from, to)| (corners[from], corners[to]))
+    .collect()
 }
 
 /// Number of positions of a site in a supercell, including shared cell-face,
@@ -1346,8 +1808,8 @@ pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, V
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_fractional, crystal_to_world, periodic_image_count, periodic_image_offsets,
-        resolved_vector_direction, vector_matches_atom,
+        canonical_fractional, crystal_to_world, miller_plane_normal, periodic_image_count,
+        periodic_image_offsets, resolved_vector_direction, vector_matches_atom,
     };
     use bevy::prelude::{Mat3, Vec3};
     use wyckoscope::model::{SiteId, UnitCell};
@@ -1384,6 +1846,18 @@ mod tests {
         let b = crystal_to_world(Vec3::Y);
         let c = crystal_to_world(Vec3::Z);
         assert!(a.cross(b).dot(c) > 0.999);
+    }
+
+    #[test]
+    fn miller_plane_uses_the_reciprocal_lattice_without_two_pi() {
+        let cell = UnitCell::new(2.0, 3.0, 4.0, 90.0, 90.0, 90.0);
+        let (normal, offset) = miller_plane_normal(&cell, [1, 0, 0], 1.0).expect("valid plane");
+        assert!(normal.distance(Vec3::X) < 1.0e-5);
+        assert!(offset.distance(Vec3::new(2.0, 0.0, 0.0)) < 1.0e-5);
+
+        let (normal, offset) = miller_plane_normal(&cell, [0, 0, 1], 1.0).expect("valid plane");
+        assert!(normal.distance(Vec3::Y) < 1.0e-5);
+        assert!(offset.distance(Vec3::new(0.0, 4.0, 0.0)) < 1.0e-5);
     }
 
     #[test]
