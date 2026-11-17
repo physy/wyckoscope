@@ -1704,26 +1704,37 @@ fn ui_view_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "CAMERA DIRECTION", |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            for (label, direction) in view_directions(&state.structure) {
-                if ui
-                    .add_sized([64.0, 29.0], egui::Button::new(label))
-                    .clicked()
-                {
-                    orbit.look_from(direction);
+        egui::Grid::new("camera_direction_buttons")
+            .num_columns(4)
+            .spacing(egui::vec2(6.0, 6.0))
+            .show(ui, |ui| {
+                let mut column = 0;
+                for (label, direction) in view_directions(&state.structure) {
+                    if ui
+                        .add_sized([64.0, 29.0], egui::Button::new(label))
+                        .clicked()
+                    {
+                        orbit.look_from(direction);
+                    }
+                    column += 1;
+                    if label == "c" {
+                        if ui
+                            .add_sized([64.0, 29.0], egui::Button::new("Default"))
+                            .clicked()
+                        {
+                            orbit.reset();
+                        }
+                        column += 1;
+                    }
+                    if column == 4 {
+                        ui.end_row();
+                        column = 0;
+                    }
                 }
-            }
-        });
-        if ui
-            .add_sized(
-                [ui.available_width(), 31.0],
-                egui::Button::new("Reset camera   F"),
-            )
-            .clicked()
-        {
-            orbit.reset();
-        }
+                if column != 0 {
+                    ui.end_row();
+                }
+            });
         ui.label(
             egui::RichText::new("Left drag: rotate · Shift/right drag: move · Wheel: zoom")
                 .size(11.0)

@@ -937,7 +937,7 @@ pub(crate) struct OrbitCamera {
 impl OrbitCamera {
     pub(crate) fn reset(&mut self) {
         self.target = Vec3::ZERO;
-        self.rotation = Quat::from_euler(EulerRot::YXZ, -0.68, -0.42, 0.0);
+        self.rotation = Quat::from_euler(EulerRot::YXZ, 2.2, -0.32, 0.0);
         self.arcball_anchor = None;
     }
 
