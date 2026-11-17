@@ -3,7 +3,8 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use wyckoscope::model::{
-    AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals, UnitCell,
+    AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals,
+    SymmetryMetadata, UnitCell,
 };
 
 use crate::{
@@ -322,6 +323,8 @@ struct StructureFile {
     asymmetric_atoms: Vec<AtomFile>,
     atoms: Vec<AtomFile>,
     space_group: Option<String>,
+    #[serde(default)]
+    symmetry_metadata: SymmetryMetadataFile,
     symmetry_operation_count: usize,
     source_format: wyckoscope::model::SourceFormat,
     warnings: Vec<String>,
@@ -344,10 +347,27 @@ struct AtomFile {
     element: String,
     label: String,
     fractional: [f32; 3],
+    #[serde(default)]
+    fractional_as_written: Option<[f32; 3]>,
     occupancy: f32,
+    #[serde(default)]
+    u_iso: Option<f32>,
     symmetry_rotation: [f32; 9],
     symmetry_time_reversal: f32,
     magnetic_moment: Option<[f32; 3]>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SymmetryMetadataFile {
+    lattice_centering: Option<String>,
+    space_group_number: Option<u16>,
+    setting: Option<String>,
+    parent_space_group_name: Option<String>,
+    parent_space_group_number: Option<u16>,
+    magnetic_space_group_name_bns: Option<String>,
+    magnetic_space_group_number_bns: Option<String>,
+    transformation_to_standard: Option<String>,
+    transformation_from_standard: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -395,6 +415,7 @@ impl From<CrystalStructure> for StructureFile {
                 .collect(),
             atoms: structure.atoms.into_iter().map(AtomFile::from).collect(),
             space_group: structure.space_group,
+            symmetry_metadata: SymmetryMetadataFile::from(structure.symmetry_metadata),
             symmetry_operation_count: structure.symmetry_operation_count,
             source_format: structure.source_format,
             warnings: structure.warnings,
@@ -430,6 +451,7 @@ impl StructureFile {
                 .map(AtomFile::try_into_atom)
                 .collect::<Result<_, _>>()?,
             space_group: self.space_group,
+            symmetry_metadata: self.symmetry_metadata.into(),
             symmetry_operation_count: self.symmetry_operation_count,
             source_format: self.source_format,
             warnings: self.warnings,
@@ -445,7 +467,9 @@ impl From<AtomSite> for AtomFile {
             element: atom.element,
             label: atom.label,
             fractional: atom.fractional.to_array(),
+            fractional_as_written: Some(atom.fractional_as_written.to_array()),
             occupancy: atom.occupancy,
+            u_iso: atom.u_iso,
             symmetry_rotation: atom.symmetry_rotation.to_cols_array(),
             symmetry_time_reversal: atom.symmetry_time_reversal,
             magnetic_moment: atom.magnetic_moment.map(|moment| moment.to_array()),
@@ -465,11 +489,47 @@ impl AtomFile {
             element: self.element,
             label: self.label,
             fractional: Vec3::from_array(self.fractional),
+            fractional_as_written: Vec3::from_array(
+                self.fractional_as_written.unwrap_or(self.fractional),
+            ),
             occupancy: self.occupancy,
+            u_iso: self.u_iso,
             symmetry_rotation: Mat3::from_cols_array(&self.symmetry_rotation),
             symmetry_time_reversal: self.symmetry_time_reversal,
             magnetic_moment: self.magnetic_moment.map(Vec3::from_array),
         })
+    }
+}
+
+impl From<SymmetryMetadata> for SymmetryMetadataFile {
+    fn from(metadata: SymmetryMetadata) -> Self {
+        Self {
+            lattice_centering: metadata.lattice_centering,
+            space_group_number: metadata.space_group_number,
+            setting: metadata.setting,
+            parent_space_group_name: metadata.parent_space_group_name,
+            parent_space_group_number: metadata.parent_space_group_number,
+            magnetic_space_group_name_bns: metadata.magnetic_space_group_name_bns,
+            magnetic_space_group_number_bns: metadata.magnetic_space_group_number_bns,
+            transformation_to_standard: metadata.transformation_to_standard,
+            transformation_from_standard: metadata.transformation_from_standard,
+        }
+    }
+}
+
+impl From<SymmetryMetadataFile> for SymmetryMetadata {
+    fn from(metadata: SymmetryMetadataFile) -> Self {
+        Self {
+            lattice_centering: metadata.lattice_centering,
+            space_group_number: metadata.space_group_number,
+            setting: metadata.setting,
+            parent_space_group_name: metadata.parent_space_group_name,
+            parent_space_group_number: metadata.parent_space_group_number,
+            magnetic_space_group_name_bns: metadata.magnetic_space_group_name_bns,
+            magnetic_space_group_number_bns: metadata.magnetic_space_group_number_bns,
+            transformation_to_standard: metadata.transformation_to_standard,
+            transformation_from_standard: metadata.transformation_from_standard,
+        }
     }
 }
 

@@ -746,29 +746,76 @@ fn ui_structure_tab(
                     .color(TEXT_SECONDARY),
             );
         });
+    });
+    section(ui, "CRYSTALLOGRAPHY", |ui| {
         ui.add_space(12.0);
-        egui::Grid::new("structure_stats")
+        egui::Grid::new("crystallography_report")
             .num_columns(2)
             .spacing([18.0, 7.0])
             .show(ui, |ui| {
-                stat(
-                    ui,
-                    "Sites / expanded",
-                    format!(
-                        "{} / {}",
-                        state.structure.asymmetric_atoms.len(),
-                        state.structure.atoms.len()
-                    ),
-                );
-                stat(
-                    ui,
-                    "Space group",
-                    state
-                        .structure
-                        .space_group
-                        .clone()
-                        .unwrap_or_else(|| "not specified".to_string()),
-                );
+                let metadata = &state.structure.symmetry_metadata;
+                if let Some(parent) = &metadata.parent_space_group_name {
+                    stat(ui, "Parent space group", parent.clone());
+                    stat(
+                        ui,
+                        "Parent space group number",
+                        metadata.parent_space_group_number.map_or_else(
+                            || "not specified".to_string(),
+                            |number| number.to_string(),
+                        ),
+                    );
+                    stat(
+                        ui,
+                        "Magnetic space group (BNS)",
+                        metadata
+                            .magnetic_space_group_name_bns
+                            .clone()
+                            .unwrap_or_else(|| "not specified".to_string()),
+                    );
+                    stat(
+                        ui,
+                        "Magnetic space group number (BNS)",
+                        metadata
+                            .magnetic_space_group_number_bns
+                            .clone()
+                            .unwrap_or_else(|| "not specified".to_string()),
+                    );
+                    if let Some(transformation) = &metadata.transformation_from_standard {
+                        stat(ui, "Transformation from standard", transformation.clone());
+                    }
+                    if let Some(transformation) = &metadata.transformation_to_standard {
+                        stat(ui, "Transformation to standard", transformation.clone());
+                    }
+                } else {
+                    stat(
+                        ui,
+                        "Lattice centering",
+                        metadata
+                            .lattice_centering
+                            .clone()
+                            .unwrap_or_else(|| "not specified".to_string()),
+                    );
+                    stat(
+                        ui,
+                        "Space group name",
+                        state
+                            .structure
+                            .space_group
+                            .clone()
+                            .unwrap_or_else(|| "not specified".to_string()),
+                    );
+                    stat(
+                        ui,
+                        "Space group number",
+                        metadata.space_group_number.map_or_else(
+                            || "not specified".to_string(),
+                            |number| number.to_string(),
+                        ),
+                    );
+                    if let Some(setting) = &metadata.setting {
+                        stat(ui, "Setting", setting.clone());
+                    }
+                }
                 stat(
                     ui,
                     "Operations",
@@ -781,7 +828,7 @@ fn ui_structure_tab(
                 );
                 stat(
                     ui,
-                    "Cell",
+                    "a × b × c",
                     format!(
                         "{:.2} × {:.2} × {:.2} Å",
                         state.structure.cell.a, state.structure.cell.b, state.structure.cell.c
@@ -789,7 +836,7 @@ fn ui_structure_tab(
                 );
                 stat(
                     ui,
-                    "Angles",
+                    "α  β  γ",
                     format!(
                         "{:.0}°  {:.0}°  {:.0}°",
                         state.structure.cell.alpha,
@@ -797,6 +844,43 @@ fn ui_structure_tab(
                         state.structure.cell.gamma
                     ),
                 );
+            });
+    });
+    section(ui, "ASYMMETRIC SITES", |ui| {
+        egui::ScrollArea::both()
+            .max_height(260.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                egui::Grid::new("asymmetric_site_report")
+                    .striped(true)
+                    .spacing([9.0, 5.0])
+                    .show(ui, |ui| {
+                        for heading in ["No.", "Element", "Label", "x", "y", "z", "Occ.", "Uiso"] {
+                            ui.label(
+                                egui::RichText::new(heading)
+                                    .size(11.0)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        }
+                        ui.end_row();
+                        for (index, atom) in state.structure.asymmetric_atoms.iter().enumerate() {
+                            for value in [
+                                (index + 1).to_string(),
+                                atom.element.clone(),
+                                atom.label.clone(),
+                                format!("{:.5}", atom.fractional_as_written.x),
+                                format!("{:.5}", atom.fractional_as_written.y),
+                                format!("{:.5}", atom.fractional_as_written.z),
+                                format!("{:.3}", atom.occupancy),
+                                atom.u_iso
+                                    .map_or_else(|| "—".to_string(), |value| format!("{value:.3}")),
+                            ] {
+                                ui.label(egui::RichText::new(value).size(11.0).color(TEXT_PRIMARY));
+                            }
+                            ui.end_row();
+                        }
+                    });
             });
     });
     section(ui, "SYMMETRY", |ui| {

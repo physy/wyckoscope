@@ -306,7 +306,7 @@ pub(crate) fn apply_selected_structure(
 }
 
 fn apply_structure(
-    structure: wyckoscope::model::CrystalStructure,
+    mut structure: wyckoscope::model::CrystalStructure,
     file_name: &str,
     data_name: &str,
     state: &mut AppState,
@@ -314,6 +314,17 @@ fn apply_structure(
     dirty: &mut SceneDirty,
     selection: &mut SelectionState,
 ) {
+    if matches!(
+        structure.title.trim(),
+        "" | "." | "?" | "Untitled structure"
+    ) {
+        structure.title = Path::new(file_name)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Untitled structure")
+            .to_string();
+    }
     apply_imported_visuals(settings, &structure);
     state.structure = structure;
     state.file_name = if data_name.is_empty() {

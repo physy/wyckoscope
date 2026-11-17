@@ -4,7 +4,7 @@ use crate::{
     elements::normalize_symbol,
     model::{
         AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals, SiteId,
-        SourceFormat, UnitCell,
+        SourceFormat, SymmetryMetadata, UnitCell,
     },
 };
 
@@ -92,8 +92,14 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
                     parse_number(parts[5], "STRUC y")?,
                     parse_number(parts[6], "STRUC z")?,
                 ),
+                fractional_as_written: Vec3::new(
+                    parse_number(parts[4], "STRUC x")?,
+                    parse_number(parts[5], "STRUC y")?,
+                    parse_number(parts[6], "STRUC z")?,
+                ),
                 symmetry_rotation: Mat3::IDENTITY,
                 symmetry_time_reversal: 1.0,
+                u_iso: None,
                 magnetic_moment: None,
             };
             atoms.push(atom);
@@ -141,6 +147,7 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
         asymmetric_atoms,
         atoms,
         space_group: value_after_section(&lines, "GROUP").map(str::to_string),
+        symmetry_metadata: SymmetryMetadata::default(),
         symmetry_operation_count: symmetry_operations.len(),
         source_format: SourceFormat::Vesta,
         warnings,

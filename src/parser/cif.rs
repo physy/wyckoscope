@@ -5,7 +5,7 @@ use cryspglib::spg_database::{SPACEGROUP_TYPES, get_spacegroup_operations};
 
 use crate::{
     elements::normalize_symbol,
-    model::{AtomSite, CrystalStructure, SiteId, SourceFormat, UnitCell},
+    model::{AtomSite, CrystalStructure, SiteId, SourceFormat, SymmetryMetadata, UnitCell},
 };
 
 use super::{ParseError, StructureCandidate, parse_number};
@@ -105,6 +105,8 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
     let symbol_index = index(&["_atom_site_type_symbol"]);
     let label_index = index(&["_atom_site_label"]);
     let occupancy_index = index(&["_atom_site_occupancy"]);
+    let u_iso_index = index(&["_atom_site_u_iso_or_equiv"]);
+    let b_iso_index = index(&["_atom_site_b_iso_or_equiv"]);
 
     let mut warnings = Vec::new();
     let magnetic_moments = magnetic_moments(&loops, &cell, &mut warnings);
@@ -130,13 +132,24 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             .and_then(|i| row.get(i))
             .and_then(|value| parse_number(value, "_atom_site_occupancy").ok())
             .unwrap_or(1.0);
+        let u_iso = u_iso_index
+            .and_then(|i| row.get(i))
+            .and_then(|value| parse_number(value, "_atom_site_u_iso_or_equiv").ok())
+            .or_else(|| {
+                b_iso_index
+                    .and_then(|i| row.get(i))
+                    .and_then(|value| parse_number(value, "_atom_site_b_iso_or_equiv").ok())
+                    .map(|b_iso| b_iso / (8.0 * std::f32::consts::PI.powi(2)))
+            });
         let magnetic_moment = magnetic_moments.get(&label).copied();
         base_atoms.push(AtomSite {
             site_id: SiteId(base_atoms.len() as u64),
             element: normalize_symbol(raw_symbol),
             label,
             fractional: wrap01(fractional),
+            fractional_as_written: fractional,
             occupancy,
+            u_iso,
             symmetry_rotation: Mat3::IDENTITY,
             symmetry_time_reversal: 1.0,
             magnetic_moment,
@@ -148,6 +161,7 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
     }
 
     let space_group = space_group_label(&scalars);
+    let symmetry_metadata = symmetry_metadata(&scalars, space_group.as_deref());
     let operations = symmetry_operations(&loops, &scalars, space_group.as_deref(), &mut warnings);
     let mut atoms = Vec::new();
     for atom in &base_atoms {
@@ -173,17 +187,8 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
         }
     }
 
-    let title = scalars
-        .get("_chemical_name_common")
-        .or_else(|| scalars.get("_chemical_formula_sum"))
-        .cloned()
-        .unwrap_or_else(|| {
-            if data_name.is_empty() {
-                "Untitled structure".to_string()
-            } else {
-                data_name.replace('_', " ")
-            }
-        });
+    let title = title_from_metadata(&scalars, &data_name)
+        .unwrap_or_else(|| "Untitled structure".to_string());
 
     Ok(CrystalStructure {
         title,
@@ -191,6 +196,7 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
         asymmetric_atoms: base_atoms,
         atoms,
         space_group,
+        symmetry_metadata,
         symmetry_operation_count: operations.len(),
         source_format: if is_magnetic {
             SourceFormat::Mcif
@@ -200,6 +206,62 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
         warnings,
         imported_visuals: Default::default(),
     })
+}
+
+fn symmetry_metadata(
+    scalars: &HashMap<String, String>,
+    space_group_name: Option<&str>,
+) -> SymmetryMetadata {
+    let magnetic_to_standard = scalar_text(scalars, "_space_group_magn.transform_bns_pp_abc");
+    SymmetryMetadata {
+        lattice_centering: space_group_name.and_then(lattice_centering),
+        space_group_number: space_group_number(scalars).and_then(|value| u16::try_from(value).ok()),
+        setting: scalar_text(scalars, "_space_group_it_coordinate_system_code")
+            .or_else(|| scalar_text(scalars, "_space_group.it_coordinate_system_code"))
+            // The conventional first setting is what VESTA reports when a CIF
+            // does not specify a coordinate-system choice.
+            .or_else(|| space_group_name.map(|_| "1".to_string())),
+        parent_space_group_name: scalar_text(scalars, "_parent_space_group.name_h-m_alt"),
+        parent_space_group_number: scalar_text(scalars, "_parent_space_group.it_number")
+            .and_then(|value| value.parse::<u16>().ok()),
+        magnetic_space_group_name_bns: scalar_text(scalars, "_space_group_magn.name_bns"),
+        magnetic_space_group_number_bns: scalar_text(scalars, "_space_group_magn.number_bns"),
+        transformation_from_standard: magnetic_to_standard
+            .as_deref()
+            .and_then(inverse_jones_faithful_transform),
+        transformation_to_standard: magnetic_to_standard,
+    }
+}
+
+fn scalar_text(scalars: &HashMap<String, String>, tag: &str) -> Option<String> {
+    scalars.get(tag).and_then(|value| {
+        let value = value.trim_matches(['\'', '"']).trim();
+        (!value.is_empty() && value != "." && value != "?").then(|| value.to_string())
+    })
+}
+
+fn title_from_metadata(scalars: &HashMap<String, String>, data_name: &str) -> Option<String> {
+    [
+        "_chemical_name_common",
+        "_chemical_name_systematic",
+        "_chemical_name_mineral",
+        "_chemical_formula_sum",
+        "_chemical_formula_moiety",
+    ]
+    .into_iter()
+    .find_map(|tag| scalar_text(scalars, tag))
+    .or_else(|| {
+        let name = data_name.trim().replace('_', " ");
+        (!name.is_empty() && name != "." && name != "?").then_some(name)
+    })
+}
+
+fn lattice_centering(space_group_name: &str) -> Option<String> {
+    space_group_name
+        .chars()
+        .find(|character| character.is_ascii_alphabetic())
+        .map(|character| character.to_ascii_uppercase().to_string())
+        .filter(|centering| matches!(centering.as_str(), "P" | "A" | "B" | "C" | "I" | "F" | "R"))
 }
 
 fn space_group_label(scalars: &HashMap<String, String>) -> Option<String> {
@@ -725,6 +787,123 @@ fn parse_fraction(value: &str) -> Result<f32, String> {
     }
 }
 
+/// Invert a Jones-Faithful basis/origin transformation. magCIF writes the
+/// transformed basis vectors as rows of `P` and its origin shift in the
+/// current basis, so the reverse shift is `-P p` modulo one.
+fn inverse_jones_faithful_transform(value: &str) -> Option<String> {
+    let (basis, origin) = value.trim().trim_matches(['\'', '"']).split_once(';')?;
+    let basis: Vec<_> = basis.split(',').map(str::trim).collect();
+    let origin: Vec<_> = origin.split(',').map(str::trim).collect();
+    if basis.len() != 3 || origin.len() != 3 {
+        return None;
+    }
+    let rows = [
+        parse_basis_expression(basis[0])?,
+        parse_basis_expression(basis[1])?,
+        parse_basis_expression(basis[2])?,
+    ];
+    let origin = Vec3::new(
+        parse_fraction(origin[0]).ok()?,
+        parse_fraction(origin[1]).ok()?,
+        parse_fraction(origin[2]).ok()?,
+    );
+    let matrix = Mat3::from_cols_array(&[
+        rows[0][0], rows[1][0], rows[2][0], rows[0][1], rows[1][1], rows[2][1], rows[0][2],
+        rows[1][2], rows[2][2],
+    ]);
+    if matrix.determinant().abs() < 1.0e-6 {
+        return None;
+    }
+    let inverse = matrix.inverse();
+    let inverse_rows = [
+        [inverse.x_axis.x, inverse.y_axis.x, inverse.z_axis.x],
+        [inverse.x_axis.y, inverse.y_axis.y, inverse.z_axis.y],
+        [inverse.x_axis.z, inverse.y_axis.z, inverse.z_axis.z],
+    ];
+    let reverse_origin = -(matrix * origin);
+    Some(format!(
+        "{},{},{};{},{},{}",
+        format_basis_expression(inverse_rows[0]),
+        format_basis_expression(inverse_rows[1]),
+        format_basis_expression(inverse_rows[2]),
+        format_unit_fraction(reverse_origin.x),
+        format_unit_fraction(reverse_origin.y),
+        format_unit_fraction(reverse_origin.z),
+    ))
+}
+
+fn parse_basis_expression(expression: &str) -> Option<[f32; 3]> {
+    let mut normalized = expression.replace(' ', "").replace('-', "+-");
+    if normalized.starts_with("+-") {
+        normalized.remove(0);
+    }
+    let mut coefficients = [0.0; 3];
+    for term in normalized.split('+').filter(|term| !term.is_empty()) {
+        let (index, axis) = term
+            .char_indices()
+            .find(|(_, character)| matches!(character, 'a' | 'b' | 'c'))?;
+        if !term[index + axis.len_utf8()..].is_empty() {
+            return None;
+        }
+        let coefficient = match &term[..index] {
+            "" => 1.0,
+            "-" => -1.0,
+            value => parse_fraction(value).ok()?,
+        };
+        coefficients[match axis {
+            'a' => 0,
+            'b' => 1,
+            'c' => 2,
+            _ => unreachable!(),
+        }] += coefficient;
+    }
+    Some(coefficients)
+}
+
+fn format_basis_expression(coefficients: [f32; 3]) -> String {
+    let mut output = String::new();
+    for (axis, coefficient) in ['a', 'b', 'c'].into_iter().zip(coefficients) {
+        if coefficient.abs() < 1.0e-5 {
+            continue;
+        }
+        let negative = coefficient < 0.0;
+        if !output.is_empty() {
+            output.push(if negative { '-' } else { '+' });
+        } else if negative {
+            output.push('-');
+        }
+        let magnitude = coefficient.abs();
+        if (magnitude - 1.0).abs() > 1.0e-5 {
+            output.push_str(&format_fraction(magnitude));
+        }
+        output.push(axis);
+    }
+    if output.is_empty() {
+        "0".to_string()
+    } else {
+        output
+    }
+}
+
+fn format_unit_fraction(value: f32) -> String {
+    format_fraction(value.rem_euclid(1.0))
+}
+
+fn format_fraction(value: f32) -> String {
+    const DENOMINATORS: [i32; 8] = [1, 2, 3, 4, 6, 8, 12, 24];
+    for denominator in DENOMINATORS {
+        let numerator = (value * denominator as f32).round() as i32;
+        if ((numerator as f32 / denominator as f32) - value).abs() < 1.0e-4 {
+            return if denominator == 1 {
+                numerator.to_string()
+            } else {
+                format!("{numerator}/{denominator}")
+            };
+        }
+    }
+    format!("{value:.5}")
+}
+
 fn wrap01(value: Vec3) -> Vec3 {
     Vec3::new(
         value.x.rem_euclid(1.0),
@@ -930,6 +1109,28 @@ Si1 Si 0.1 0.2 0.3
     }
 
     #[test]
+    fn selects_the_first_non_placeholder_title_candidate() {
+        let text = r#"
+data_fallback_block
+_cell_length_a 5
+_cell_length_b 5
+_cell_length_c 5
+_chemical_name_common ?
+_chemical_name_systematic .
+_chemical_name_mineral ?
+_chemical_formula_sum 'Na2 Te O6'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Na1 Na 0 0 0
+"#;
+        assert_eq!(parse(text).unwrap().title, "Na2 Te O6");
+    }
+
+    #[test]
     fn expands_from_space_group_metadata() {
         let text = r#"
 data_inversion
@@ -1089,5 +1290,51 @@ Fe1 0 0 3.5
         assert_eq!(structure.symmetry_operation_count, 2);
         assert!((structure.atoms[0].magnetic_moment.unwrap().z - 3.5).abs() < 1.0e-5);
         assert!((structure.atoms[1].magnetic_moment.unwrap().z + 3.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn preserves_magnetic_space_group_report_metadata() {
+        let text = r#"
+data_magnetic_setting
+_cell_length_a 8
+_cell_length_b 17
+_cell_length_c 5
+_parent_space_group.name_H-M_alt 'C m c m'
+_parent_space_group.IT_number 63
+_space_group_magn.transform_BNS_Pp_abc 'b,c,a;1/4,1/4,0'
+_space_group_magn.number_BNS 52.318
+_space_group_magn.name_BNS 'P_B n n a'
+loop_
+_space_group_symop_magn_operation.id
+_space_group_symop_magn_operation.xyz
+1 x,y,z,+1
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Y1 Y 0 0 0
+"#;
+        let structure = parse(text).unwrap();
+        let metadata = &structure.symmetry_metadata;
+        assert_eq!(metadata.parent_space_group_name.as_deref(), Some("C m c m"));
+        assert_eq!(metadata.parent_space_group_number, Some(63));
+        assert_eq!(
+            metadata.magnetic_space_group_name_bns.as_deref(),
+            Some("P_B n n a")
+        );
+        assert_eq!(
+            metadata.magnetic_space_group_number_bns.as_deref(),
+            Some("52.318")
+        );
+        assert_eq!(
+            metadata.transformation_to_standard.as_deref(),
+            Some("b,c,a;1/4,1/4,0")
+        );
+        assert_eq!(
+            metadata.transformation_from_standard.as_deref(),
+            Some("c,a,b;3/4,0,3/4")
+        );
     }
 }

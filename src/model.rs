@@ -11,7 +11,14 @@ pub struct AtomSite {
     pub element: String,
     pub label: String,
     pub fractional: Vec3,
+    /// Fractional coordinate as it appeared in the source asymmetric unit.
+    /// This is retained for crystallographic reports; `fractional` is wrapped
+    /// to the unit-cell range used for rendering and symmetry expansion.
+    pub fractional_as_written: Vec3,
     pub occupancy: f32,
+    /// Equivalent isotropic displacement parameter, when supplied by the
+    /// source file. It is reported in Å² by CIF and mCIF conventions.
+    pub u_iso: Option<f32>,
     /// Rotational part of the symmetry operation that generated this atom.
     /// This is used to transform axial vectors attached to a crystallographic site.
     pub symmetry_rotation: Mat3,
@@ -95,11 +102,30 @@ pub struct CrystalStructure {
     /// Sites expanded with the available space-group operations.
     pub atoms: Vec<AtomSite>,
     pub space_group: Option<String>,
+    /// Source crystallographic and magnetic-space-group metadata.  Keep this
+    /// separate from the parsed operations so the report can faithfully show
+    /// the setting supplied by a CIF or mCIF file.
+    pub symmetry_metadata: SymmetryMetadata,
     pub symmetry_operation_count: usize,
     pub source_format: SourceFormat,
     pub warnings: Vec<String>,
     /// Non-structural settings imported from a source format such as VESTA.
     pub imported_visuals: ImportedVisuals,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SymmetryMetadata {
+    pub lattice_centering: Option<String>,
+    pub space_group_number: Option<u16>,
+    pub setting: Option<String>,
+    pub parent_space_group_name: Option<String>,
+    pub parent_space_group_number: Option<u16>,
+    pub magnetic_space_group_name_bns: Option<String>,
+    pub magnetic_space_group_number_bns: Option<String>,
+    /// Jones-Faithful transform from the loaded mCIF setting to BNS standard.
+    pub transformation_to_standard: Option<String>,
+    /// Inverse of `transformation_to_standard`, when it can be derived.
+    pub transformation_from_standard: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
