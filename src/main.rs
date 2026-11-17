@@ -24,10 +24,11 @@ use lighting::sync_environment;
 use project::{
     ProjectHistory, UndoRedoRequests, apply_history_requests, initialize_history, track_history,
 };
-use scene::{rebuild_scene, setup};
+use scene::{rebuild_legend_previews, rebuild_scene, setup};
 use state::{
     AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, InspectorState,
-    SceneDirty, SceneStatus, SelectionPointer, SelectionState, StructureSelection, VisualSettings,
+    LegendPreviews, SceneDirty, SceneStatus, SelectionPointer, SelectionState, StructureSelection,
+    VisualSettings,
 };
 use ui::interface;
 
@@ -60,6 +61,7 @@ fn main() {
         .init_resource::<ElementOverrides>()
         .init_resource::<AsyncDialogs>()
         .init_resource::<ExportState>()
+        .init_resource::<LegendPreviews>()
         .init_resource::<SceneStatus>()
         .init_resource::<InspectorLayout>()
         .init_resource::<InspectorState>()
@@ -104,6 +106,7 @@ fn main() {
                 apply_history_requests,
                 select_atom,
                 rebuild_scene,
+                rebuild_legend_previews,
                 orbit_camera,
                 update_camera_viewports,
                 sync_orientation_axes,

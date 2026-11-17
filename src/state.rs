@@ -32,6 +32,7 @@ pub(crate) enum InspectorTab {
     Vectors,
     Bonds,
     View,
+    Lighting,
     Elements,
 }
 
@@ -603,7 +604,7 @@ impl Default for LightingSettings {
         Self {
             ambient_enabled: true,
             ambient_color: [255, 255, 255],
-            ambient_brightness: 1_000.0,
+            ambient_brightness: 200.0,
             key_enabled: true,
             key_kind: KeyLightKind::Directional,
             key_color: [255, 255, 255],
@@ -614,8 +615,8 @@ impl Default for LightingSettings {
             key_follow_elevation: -89.0,
             key_target_offset: [0.0, 0.0, 0.0],
             key_intensity: 2_000_000.0,
-            key_directional_illuminance: 1_000.0,
-            key_directional_rotation: [-35.0, 40.0, 0.0],
+            key_directional_illuminance: 4_000.0,
+            key_directional_rotation: [-60.0, 45.0, 0.0],
             key_range: 100.0,
             key_radius: 1.5,
             key_shadows: false,
@@ -748,9 +749,9 @@ impl Default for VisualSettings {
             expand_symmetry: true,
             show_boundary_atoms: true,
             atom_scale: 0.8,
-            atom_metallic: 0.08,
-            atom_roughness: 0.21,
-            atom_reflectance: 0.56,
+            atom_metallic: 0.52,
+            atom_roughness: 0.29,
+            atom_reflectance: 0.53,
             scene_objects: SceneObjects::default(),
             bond_radius: 0.095,
             bond_match_mode: BondMatchMode::Element,
@@ -779,7 +780,7 @@ impl Default for VisualSettings {
             projection_blend: 1.0,
             hdr_tonemapping: false,
             lighting: LightingSettings::default(),
-            exposure_ev: 9.5,
+            exposure_ev: 9.0,
             export_size: [3840, 2160],
         }
     }
@@ -873,6 +874,17 @@ pub(crate) struct ExportState {
     pub(crate) message: Option<String>,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct LegendPreviews {
+    pub(crate) entries: HashMap<String, LegendPreview>,
+    pub(crate) fingerprint: String,
+}
+
+pub(crate) struct LegendPreview {
+    pub(crate) texture_id: egui::TextureId,
+    pub(crate) _image: Handle<Image>,
+}
+
 pub(crate) struct ExportRequest {
     pub(crate) path: PathBuf,
     pub(crate) width: u32,
@@ -889,6 +901,8 @@ pub(crate) struct ExportStage {
 
 #[derive(Component)]
 pub(crate) struct CrystalVisual;
+#[derive(Component)]
+pub(crate) struct LegendPreviewVisual;
 #[derive(Component)]
 pub(crate) struct ExportCamera;
 #[derive(Component)]

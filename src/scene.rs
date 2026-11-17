@@ -2,14 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::{CameraOutputMode, Exposure, ScalingMode, visibility::RenderLayers},
+    camera::{CameraOutputMode, Exposure, RenderTarget, ScalingMode, visibility::RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
     mesh::{Indices, PrimitiveTopology},
     pbr::wireframe::{Wireframe, WireframeColor},
     prelude::*,
-    render::render_resource::{BlendState, Face},
+    render::render_resource::{BlendState, Face, TextureFormat},
 };
-use bevy_egui::PrimaryEguiContext;
+use bevy_egui::{EguiTextureHandle, EguiUserTextures, PrimaryEguiContext};
 use wyckoscope::{
     elements::{self, ElementStyle},
     model::{AtomSite, CrystalStructure, UnitCell},
@@ -18,6 +18,8 @@ use wyckoscope::{
 use crate::{AXIS_RENDER_LAYER, MAX_RENDER_ATOMS, camera::update_camera_transform, state::*};
 
 const BOUNDARY_EPSILON: f32 = 1.0e-4;
+const LEGEND_RENDER_LAYER: usize = 2;
+const LEGEND_ICON_SIZE: u32 = 96;
 
 pub(crate) fn setup(
     mut commands: Commands,
@@ -238,6 +240,129 @@ pub(crate) fn setup(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, 2.4, 0.0)),
         LightRole::Fill,
     ));
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebuild_legend_previews(
+    mut commands: Commands,
+    state: Res<AppState>,
+    settings: Res<VisualSettings>,
+    overrides: Res<ElementOverrides>,
+    mut previews: ResMut<LegendPreviews>,
+    old: Query<Entity, With<LegendPreviewVisual>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut egui_textures: ResMut<EguiUserTextures>,
+) {
+    let mut symbols: Vec<_> = state
+        .structure
+        .visible_atoms(settings.expand_symmetry)
+        .iter()
+        .filter(|atom| {
+            overrides
+                .0
+                .get(&atom.element)
+                .is_none_or(|style| style.visible)
+        })
+        .map(|atom| atom.element.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    symbols.sort_unstable();
+    let fingerprint = format!(
+        "{:?}|{:.3}|{:.3}|{:.3}|{:?}",
+        symbols,
+        settings.atom_metallic,
+        settings.atom_roughness,
+        settings.atom_reflectance,
+        overrides.0
+    );
+    if previews.fingerprint == fingerprint {
+        return;
+    }
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+    previews.entries.clear();
+    previews.fingerprint = fingerprint;
+    if symbols.is_empty() {
+        return;
+    }
+
+    let sphere = meshes.add(Sphere::new(0.82).mesh().ico(5).expect("valid icosphere"));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(1.0, 0.96, 0.90),
+            illuminance: 16_000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, -0.7, 0.0)),
+        RenderLayers::layer(LEGEND_RENDER_LAYER),
+        LegendPreviewVisual,
+    ));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(0.55, 0.70, 1.0),
+            illuminance: 4_200.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.5, 2.2, 0.0)),
+        RenderLayers::layer(LEGEND_RENDER_LAYER),
+        LegendPreviewVisual,
+    ));
+    for (index, symbol) in symbols.into_iter().enumerate() {
+        let x = index as f32 * 5.0;
+        let style = resolved_style(&symbol, &overrides);
+        let material = materials.add(StandardMaterial {
+            base_color: style.color,
+            emissive: style.color.to_linear() * 0.035,
+            metallic: settings.atom_metallic,
+            perceptual_roughness: settings.atom_roughness,
+            reflectance: settings.atom_reflectance,
+            ..default()
+        });
+        commands.spawn((
+            Mesh3d(sphere.clone()),
+            MeshMaterial3d(material),
+            Transform::from_xyz(x, 0.0, 0.0),
+            RenderLayers::layer(LEGEND_RENDER_LAYER),
+            LegendPreviewVisual,
+        ));
+        let image = images.add(Image::new_target_texture(
+            LEGEND_ICON_SIZE,
+            LEGEND_ICON_SIZE,
+            TextureFormat::bevy_default(),
+        ));
+        let texture_id = egui_textures.add_image(EguiTextureHandle::Strong(image.clone()));
+        commands.spawn((
+            Camera3d::default(),
+            Camera {
+                order: -1,
+                target: RenderTarget::Image(image.clone().into()),
+                clear_color: ClearColorConfig::Custom(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                ..default()
+            },
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::FixedVertical {
+                    viewport_height: 2.35,
+                },
+                ..OrthographicProjection::default_3d()
+            }),
+            Transform::from_xyz(x, 0.0, 4.0).looking_at(Vec3::new(x, 0.0, 0.0), Vec3::Y),
+            RenderLayers::layer(LEGEND_RENDER_LAYER),
+            LegendPreviewVisual,
+        ));
+        previews.entries.insert(
+            symbol,
+            LegendPreview {
+                texture_id,
+                _image: image,
+            },
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

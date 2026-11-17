@@ -56,7 +56,7 @@ pub(crate) fn interface(
     mut overrides: ResMut<ElementOverrides>,
     mut structure_selection: ResMut<StructureSelection>,
     mut dialogs: ResMut<AsyncDialogs>,
-    export: Res<ExportState>,
+    legend: (Res<ExportState>, Res<LegendPreviews>),
     scene_status: Res<SceneStatus>,
     mut selection: ResMut<SelectionState>,
     mut inspector: ResMut<InspectorState>,
@@ -70,6 +70,7 @@ pub(crate) fn interface(
     >,
     mut interface_font_registered: Local<bool>,
 ) -> Result {
+    let (export, previews) = legend;
     let ctx = contexts.ctx_mut()?;
     if !*interface_font_registered {
         install_interface_font(ctx);
@@ -123,6 +124,7 @@ pub(crate) fn interface(
                         let (orbit, _, _, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
                     }
+                    InspectorTab::Lighting => ui_lighting_tab(ui, &mut settings),
                     InspectorTab::Elements => {
                         ui_elements_tab(ui, &state, &mut overrides, &mut dirty)
                     }
@@ -131,7 +133,7 @@ pub(crate) fn interface(
     layout.width = panel.response.rect.width();
     let (_, camera_transform, render_camera, camera_global_transform) = &*camera;
     draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
-    draw_element_legend(ctx, &state, &settings, &overrides, layout.width);
+    draw_element_legend(ctx, &state, &settings, &overrides, &previews, layout.width);
     draw_scene_object_labels(
         ctx,
         &state,
@@ -350,6 +352,7 @@ fn draw_element_legend(
     state: &AppState,
     settings: &VisualSettings,
     overrides: &ElementOverrides,
+    previews: &LegendPreviews,
     panel_width: f32,
 ) {
     if !settings.show_element_legend {
@@ -391,7 +394,7 @@ fn draw_element_legend(
                             let start = column * rows_per_column;
                             let end = (start + rows_per_column).min(elements.len());
                             for symbol in &elements[start..end] {
-                                draw_element_legend_item(ui, symbol, overrides, settings);
+                                draw_element_legend_item(ui, symbol, overrides, settings, previews);
                             }
                         }
                     });
@@ -539,6 +542,7 @@ fn draw_element_legend_item(
     symbol: &str,
     overrides: &ElementOverrides,
     settings: &VisualSettings,
+    previews: &LegendPreviews,
 ) {
     let appearance = overrides
         .0
@@ -553,23 +557,18 @@ fn draw_element_legend_item(
     ui.horizontal(|ui| {
         let radius = (5.0 * settings.element_legend_sphere_scale).clamp(3.0, 16.0);
         let item_height = (radius * 2.0 + 3.0).max(settings.element_legend_label_size + 3.0);
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(radius * 2.0 + 7.0, item_height),
-            egui::Sense::hover(),
-        );
-        let center = rect.center();
-        let painter = ui.painter();
-        painter.circle_filled(
-            center + egui::vec2(-1.1, 1.2),
-            radius,
-            color.gamma_multiply(0.48),
-        );
-        painter.circle(
-            center,
-            radius,
-            color,
-            egui::Stroke::new(0.5, egui::Color32::BLACK),
-        );
+        if let Some(preview) = previews.entries.get(symbol) {
+            ui.add(
+                egui::Image::new((preview.texture_id, egui::vec2(radius * 2.0, radius * 2.0)))
+                    .maintain_aspect_ratio(true),
+            );
+        } else {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(radius * 2.0 + 7.0, item_height),
+                egui::Sense::hover(),
+            );
+            ui.painter().circle_filled(rect.center(), radius, color);
+        }
         ui.label(
             egui::RichText::new(symbol)
                 .size(settings.element_legend_label_size)
@@ -623,6 +622,8 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
             ui.end_row();
             tab_button(ui, active, InspectorTab::Bonds, "Bonds");
             tab_button(ui, active, InspectorTab::View, "View");
+            ui.end_row();
+            tab_button(ui, active, InspectorTab::Lighting, "Lighting");
             tab_button(ui, active, InspectorTab::Elements, "Elements");
             ui.end_row();
         });
@@ -1703,24 +1704,17 @@ fn ui_view_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "CAMERA DIRECTION", |ui| {
-        egui::Grid::new("view_directions")
-            .num_columns(4)
-            .spacing([6.0, 6.0])
-            .show(ui, |ui| {
-                for (index, (label, direction)) in
-                    view_directions(&state.structure).into_iter().enumerate()
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (label, direction) in view_directions(&state.structure) {
+                if ui
+                    .add_sized([64.0, 29.0], egui::Button::new(label))
+                    .clicked()
                 {
-                    if ui
-                        .add_sized([64.0, 29.0], egui::Button::new(label))
-                        .clicked()
-                    {
-                        orbit.look_from(direction);
-                    }
-                    if index == 3 {
-                        ui.end_row();
-                    }
+                    orbit.look_from(direction);
                 }
-            });
+            }
+        });
         if ui
             .add_sized(
                 [ui.available_width(), 31.0],
@@ -1864,7 +1858,9 @@ fn ui_view_tab(
                 ui.label("");
             });
     });
-    ui.add_space(16.0);
+}
+
+fn ui_lighting_tab(ui: &mut egui::Ui, settings: &mut VisualSettings) {
     ui_lighting_controls(
         ui,
         &mut settings.lighting,
