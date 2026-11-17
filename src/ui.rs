@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use egui_alignments::Row;
 use egui_text_outline::OutlinedLabel;
 
 use crate::{
@@ -554,31 +555,33 @@ fn draw_element_legend_item(
         appearance.color[1],
         appearance.color[2],
     );
-    ui.horizontal(|ui| {
-        let radius = (5.0 * settings.element_legend_sphere_scale).clamp(3.0, 16.0);
-        let item_height = (radius * 2.0 + 3.0).max(settings.element_legend_label_size + 3.0);
-        if let Some(preview) = previews.entries.get(symbol) {
-            ui.add(
-                egui::Image::new((preview.texture_id, egui::vec2(radius * 2.0, radius * 2.0)))
-                    .maintain_aspect_ratio(true),
+    let radius = (5.0 * settings.element_legend_sphere_scale).clamp(3.0, 16.0);
+    let item_height = (radius * 2.0 + 3.0).max(settings.element_legend_label_size + 3.0);
+    Row::new(egui::Align::Center)
+        .min_height(item_height)
+        .show(ui, |ui| {
+            if let Some(preview) = previews.entries.get(symbol) {
+                ui.add(
+                    egui::Image::new((preview.texture_id, egui::vec2(radius * 2.0, radius * 2.0)))
+                        .maintain_aspect_ratio(true),
+                );
+            } else {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(radius * 2.0 + 7.0, item_height),
+                    egui::Sense::hover(),
+                );
+                ui.painter().circle_filled(rect.center(), radius, color);
+            }
+            ui.label(
+                egui::RichText::new(symbol)
+                    .size(settings.element_legend_label_size)
+                    .color(egui::Color32::from_rgb(
+                        settings.element_legend_text_color[0],
+                        settings.element_legend_text_color[1],
+                        settings.element_legend_text_color[2],
+                    )),
             );
-        } else {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(radius * 2.0 + 7.0, item_height),
-                egui::Sense::hover(),
-            );
-            ui.painter().circle_filled(rect.center(), radius, color);
-        }
-        ui.label(
-            egui::RichText::new(symbol)
-                .size(settings.element_legend_label_size)
-                .color(egui::Color32::from_rgb(
-                    settings.element_legend_text_color[0],
-                    settings.element_legend_text_color[1],
-                    settings.element_legend_text_color[2],
-                )),
-        );
-    });
+        });
 }
 
 fn app_header(ui: &mut egui::Ui) {
