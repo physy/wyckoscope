@@ -24,7 +24,7 @@ use lighting::sync_environment;
 use project::{
     ProjectHistory, UndoRedoRequests, apply_history_requests, initialize_history, track_history,
 };
-use scene::{rebuild_legend_previews, rebuild_scene, setup};
+use scene::{rebuild_legend_previews, rebuild_scene, setup, sync_legend_preview_lights};
 use state::{
     AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, InspectorState,
     LegendPreviews, SceneDirty, SceneStatus, SelectionPointer, SelectionState, StructureSelection,
@@ -111,6 +111,7 @@ fn main() {
                 update_camera_viewports,
                 sync_orientation_axes,
                 sync_environment,
+                sync_legend_preview_lights,
                 process_export,
                 track_history,
             )

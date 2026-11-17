@@ -302,17 +302,6 @@ pub(crate) fn rebuild_legend_previews(
         RenderLayers::layer(LEGEND_RENDER_LAYER),
         LegendPreviewVisual,
     ));
-    commands.spawn((
-        DirectionalLight {
-            color: Color::srgb(0.55, 0.70, 1.0),
-            illuminance: 4_200.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.5, 2.2, 0.0)),
-        RenderLayers::layer(LEGEND_RENDER_LAYER),
-        LegendPreviewVisual,
-    ));
     for (index, symbol) in symbols.into_iter().enumerate() {
         let x = index as f32 * 5.0;
         let style = resolved_style(&symbol, &overrides);
@@ -362,6 +351,51 @@ pub(crate) fn rebuild_legend_previews(
                 _image: image,
             },
         );
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_legend_preview_lights(
+    main_camera: Single<
+        &Transform,
+        (
+            With<OrbitCamera>,
+            Without<LegendPreviewVisual>,
+            Without<LightRole>,
+        ),
+    >,
+    main_lights: Query<(&LightRole, &Transform), Without<LegendPreviewVisual>>,
+    preview_cameras: Query<
+        &Transform,
+        (With<Camera>, With<LegendPreviewVisual>, Without<LightRole>),
+    >,
+    mut preview_lights: Query<
+        &mut Transform,
+        (
+            With<LegendPreviewVisual>,
+            With<DirectionalLight>,
+            Without<Camera>,
+            Without<LightRole>,
+        ),
+    >,
+) {
+    let Some(preview_camera) = preview_cameras.iter().next() else {
+        return;
+    };
+    let key_rotation = main_lights.iter().find_map(|(role, transform)| {
+        matches!(role, LightRole::KeyDirectional).then_some(transform.rotation)
+    });
+    for mut transform in &mut preview_lights {
+        let Some(main_light_rotation) = key_rotation else {
+            continue;
+        };
+
+        // Translate the light from the main camera's coordinate system into the
+        // fixed preview camera's coordinate system.  Camera-following lights
+        // therefore keep the same screen-space direction; world-fixed lights
+        // naturally move across the preview sphere when the main camera rotates.
+        transform.rotation =
+            preview_camera.rotation * main_camera.rotation.inverse() * main_light_rotation;
     }
 }
 
