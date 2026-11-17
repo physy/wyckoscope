@@ -620,14 +620,14 @@ fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
             tab_button(ui, active, InspectorTab::File, "File");
             tab_button(ui, active, InspectorTab::Structure, "Structure");
             ui.end_row();
-            tab_button(ui, active, InspectorTab::Objects, "Objects");
-            tab_button(ui, active, InspectorTab::Vectors, "Vectors");
-            ui.end_row();
-            tab_button(ui, active, InspectorTab::Bonds, "Bonds");
             tab_button(ui, active, InspectorTab::View, "View");
+            tab_button(ui, active, InspectorTab::Elements, "Elements");
             ui.end_row();
             tab_button(ui, active, InspectorTab::Lighting, "Lighting");
-            tab_button(ui, active, InspectorTab::Elements, "Elements");
+            tab_button(ui, active, InspectorTab::Objects, "Objects");
+            ui.end_row();
+            tab_button(ui, active, InspectorTab::Bonds, "Bonds");
+            tab_button(ui, active, InspectorTab::Vectors, "Vectors");
             ui.end_row();
         });
 }
