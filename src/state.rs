@@ -767,7 +767,7 @@ impl Default for VisualSettings {
             unit_cell_line_style: CellLineStyle::Solid,
             unit_cell_line_width: 0.6,
             unit_cell_color: [0, 0, 0],
-            show_outlines: true,
+            show_outlines: false,
             auto_rotate: false,
             background: [255, 255, 255],
             axis_colors: [[235, 31, 31], [31, 184, 51], [31, 82, 245]],
