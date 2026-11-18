@@ -107,6 +107,8 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
     let occupancy_index = index(&["_atom_site_occupancy"]);
     let u_iso_index = index(&["_atom_site_u_iso_or_equiv"]);
     let b_iso_index = index(&["_atom_site_b_iso_or_equiv"]);
+    let disorder_assembly_index = index(&["_atom_site_disorder_assembly"]);
+    let disorder_group_index = index(&["_atom_site_disorder_group"]);
 
     let mut warnings = Vec::new();
     let magnetic_moments = magnetic_moments(&loops, &cell, &mut warnings);
@@ -141,6 +143,12 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
                     .and_then(|value| parse_number(value, "_atom_site_b_iso_or_equiv").ok())
                     .map(|b_iso| b_iso / (8.0 * std::f32::consts::PI.powi(2)))
             });
+        let disorder_assembly = disorder_assembly_index
+            .and_then(|i| row.get(i))
+            .and_then(|value| clean_text(value));
+        let disorder_group = disorder_group_index
+            .and_then(|i| row.get(i))
+            .and_then(|value| clean_text(value));
         let magnetic_moment = magnetic_moments.get(&label).copied();
         base_atoms.push(AtomSite {
             site_id: SiteId(base_atoms.len() as u64),
@@ -150,6 +158,8 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             fractional_as_written: fractional,
             occupancy,
             u_iso,
+            disorder_assembly,
+            disorder_group,
             symmetry_rotation: Mat3::IDENTITY,
             symmetry_time_reversal: 1.0,
             magnetic_moment,
@@ -234,10 +244,12 @@ fn symmetry_metadata(
 }
 
 fn scalar_text(scalars: &HashMap<String, String>, tag: &str) -> Option<String> {
-    scalars.get(tag).and_then(|value| {
-        let value = value.trim_matches(['\'', '"']).trim();
-        (!value.is_empty() && value != "." && value != "?").then(|| value.to_string())
-    })
+    scalars.get(tag).and_then(|value| clean_text(value))
+}
+
+fn clean_text(value: &str) -> Option<String> {
+    let value = value.trim_matches(['\'', '"']).trim();
+    (!value.is_empty() && value != "." && value != "?").then(|| value.to_string())
 }
 
 fn title_from_metadata(scalars: &HashMap<String, String>, data_name: &str) -> Option<String> {
@@ -1128,6 +1140,38 @@ _atom_site_fract_z
 Na1 Na 0 0 0
 "#;
         assert_eq!(parse(text).unwrap().title, "Na2 Te O6");
+    }
+
+    #[test]
+    fn preserves_mixed_occupancy_and_disorder_metadata() {
+        let text = r#"
+data_mixed_site
+_cell_length_a 5
+_cell_length_b 5
+_cell_length_c 5
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_disorder_assembly
+_atom_site_disorder_group
+Na1 Na 0 0 0 0.67 A 1
+K1 K 0 0 0 0.33 A 1
+"#;
+        let structure = parse(text).unwrap();
+        assert_eq!(structure.asymmetric_atoms.len(), 2);
+        assert!((structure.asymmetric_atoms[0].occupancy - 0.67).abs() < 1.0e-5);
+        assert_eq!(
+            structure.asymmetric_atoms[1].disorder_assembly.as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            structure.asymmetric_atoms[1].disorder_group.as_deref(),
+            Some("1")
+        );
     }
 
     #[test]

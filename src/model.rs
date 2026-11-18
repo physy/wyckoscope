@@ -19,6 +19,10 @@ pub struct AtomSite {
     /// Equivalent isotropic displacement parameter, when supplied by the
     /// source file. It is reported in Å² by CIF and mCIF conventions.
     pub u_iso: Option<f32>,
+    /// CIF disorder metadata, retained even though the initial sector view
+    /// groups components by their rendered crystallographic position.
+    pub disorder_assembly: Option<String>,
+    pub disorder_group: Option<String>,
     /// Rotational part of the symmetry operation that generated this atom.
     /// This is used to transform axial vectors attached to a crystallographic site.
     pub symmetry_rotation: Mat3,

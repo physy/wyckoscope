@@ -87,6 +87,8 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
                 element: normalize_symbol(parts[1]),
                 label: parts[2].to_string(),
                 occupancy: parse_number(parts[3], "STRUC occupancy").unwrap_or(1.0),
+                disorder_assembly: None,
+                disorder_group: None,
                 fractional: Vec3::new(
                     parse_number(parts[4], "STRUC x")?,
                     parse_number(parts[5], "STRUC y")?,

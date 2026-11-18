@@ -352,6 +352,10 @@ struct AtomFile {
     occupancy: f32,
     #[serde(default)]
     u_iso: Option<f32>,
+    #[serde(default)]
+    disorder_assembly: Option<String>,
+    #[serde(default)]
+    disorder_group: Option<String>,
     symmetry_rotation: [f32; 9],
     symmetry_time_reversal: f32,
     magnetic_moment: Option<[f32; 3]>,
@@ -470,6 +474,8 @@ impl From<AtomSite> for AtomFile {
             fractional_as_written: Some(atom.fractional_as_written.to_array()),
             occupancy: atom.occupancy,
             u_iso: atom.u_iso,
+            disorder_assembly: atom.disorder_assembly,
+            disorder_group: atom.disorder_group,
             symmetry_rotation: atom.symmetry_rotation.to_cols_array(),
             symmetry_time_reversal: atom.symmetry_time_reversal,
             magnetic_moment: atom.magnetic_moment.map(|moment| moment.to_array()),
@@ -494,6 +500,8 @@ impl AtomFile {
             ),
             occupancy: self.occupancy,
             u_iso: self.u_iso,
+            disorder_assembly: self.disorder_assembly,
+            disorder_group: self.disorder_group,
             symmetry_rotation: Mat3::from_cols_array(&self.symmetry_rotation),
             symmetry_time_reversal: self.symmetry_time_reversal,
             magnetic_moment: self.magnetic_moment.map(Vec3::from_array),

@@ -21,6 +21,11 @@ const BOUNDARY_EPSILON: f32 = 1.0e-4;
 const LEGEND_RENDER_LAYER: usize = 2;
 const LEGEND_ICON_SIZE: u32 = 96;
 
+/// Marker for the custom meshes used to visualize partial or mixed occupancy.
+/// Unlike a plain sphere, a sector has an observable orientation.
+#[derive(Component)]
+pub(crate) struct OccupancySector;
+
 pub(crate) fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -399,6 +404,18 @@ pub(crate) fn sync_legend_preview_lights(
     }
 }
 
+pub(crate) fn orient_occupancy_sectors(
+    camera: Single<&Transform, (With<OrbitCamera>, Without<OccupancySector>)>,
+    mut sectors: Query<&mut Transform, With<OccupancySector>>,
+) {
+    for mut transform in &mut sectors {
+        // The sector mesh is defined around its local Y axis. Matching the
+        // camera rotation makes its local +Z direction point from the site to
+        // the camera, keeping the center of the occupancy fan facing the view.
+        transform.rotation = camera.rotation;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn rebuild_scene(
     mut commands: Commands,
@@ -516,59 +533,6 @@ pub(crate) fn rebuild_scene(
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    for atom in &render_atoms {
-        let style = resolved_style(&atom.element, &overrides);
-        let material = atom_materials
-            .entry(atom.element.clone())
-            .or_insert_with(|| create_atom_material(&mut materials, style, &settings))
-            .clone();
-        let mut radius =
-            style.display_radius * settings.atom_scale * atom.occupancy.max(0.15).cbrt();
-        if settings.atom_display_mode == AtomDisplayMode::SpaceFilling {
-            radius *= 1.55;
-        }
-        if selection
-            .atoms
-            .iter()
-            .any(|selected| selected.matches(atom))
-        {
-            commands.spawn((
-                Mesh3d(sphere_mesh.clone()),
-                MeshMaterial3d(selection_material.clone()),
-                Transform::from_translation(atom.position).with_scale(Vec3::splat(radius * 1.18)),
-                CrystalVisual,
-            ));
-        }
-        if settings.show_outlines && settings.atom_display_mode != AtomDisplayMode::Wireframe {
-            commands.spawn((
-                Mesh3d(sphere_mesh.clone()),
-                MeshMaterial3d(outline_material.clone()),
-                Transform::from_translation(atom.position).with_scale(Vec3::splat(radius * 1.025)),
-                CrystalVisual,
-            ));
-        }
-        let mut entity = commands.spawn((
-            Name::new(format!("{} {}", atom.element, atom.label)),
-            Mesh3d(sphere_mesh.clone()),
-            MeshMaterial3d(
-                if settings.atom_display_mode == AtomDisplayMode::Wireframe {
-                    wireframe_fill_material.clone()
-                } else {
-                    material
-                },
-            ),
-            Transform::from_translation(atom.position).with_scale(Vec3::splat(radius)),
-            AtomPickable {
-                atom: atom.clone(),
-                radius,
-            },
-            CrystalVisual,
-        ));
-        if settings.atom_display_mode == AtomDisplayMode::Wireframe {
-            entity.insert((Wireframe, WireframeColor { color: style.color }));
-        }
-    }
-
     if settings
         .bond_rules
         .iter()
@@ -610,43 +574,25 @@ pub(crate) fn rebuild_scene(
         .flat_map(|&(first, second)| [first, second])
         .filter(|&index| index >= inside_atom_count)
         .collect();
-    for &index in &external_bond_atoms {
-        let atom = &render_atoms[index];
-        let style = resolved_style(&atom.element, &overrides);
-        let material = atom_materials[&atom.element].clone();
-        let mut radius =
-            style.display_radius * settings.atom_scale * atom.occupancy.max(0.15).cbrt();
-        if settings.atom_display_mode == AtomDisplayMode::SpaceFilling {
-            radius *= 1.55;
-        }
-        if settings.show_outlines && settings.atom_display_mode != AtomDisplayMode::Wireframe {
-            commands.spawn((
-                Mesh3d(sphere_mesh.clone()),
-                MeshMaterial3d(outline_material.clone()),
-                Transform::from_translation(atom.position).with_scale(Vec3::splat(radius * 1.025)),
-                CrystalVisual,
-            ));
-        }
-        let mut entity = commands.spawn((
-            Name::new(format!("{} {}", atom.element, atom.label)),
-            Mesh3d(sphere_mesh.clone()),
-            MeshMaterial3d(
-                if settings.atom_display_mode == AtomDisplayMode::Wireframe {
-                    wireframe_fill_material.clone()
-                } else {
-                    material
-                },
-            ),
-            Transform::from_translation(atom.position).with_scale(Vec3::splat(radius)),
-            AtomPickable {
-                atom: atom.clone(),
-                radius,
-            },
-            CrystalVisual,
-        ));
-        if settings.atom_display_mode == AtomDisplayMode::Wireframe {
-            entity.insert((Wireframe, WireframeColor { color: style.color }));
-        }
+    let mut visible_indices: Vec<_> = (0..inside_atom_count).collect();
+    visible_indices.extend(external_bond_atoms.iter().copied());
+    visible_indices.sort_unstable();
+    visible_indices.dedup();
+    for group in render_atom_site_groups(&render_atoms, &visible_indices) {
+        spawn_render_atom_site(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &sphere_mesh,
+            &selection_material,
+            &outline_material,
+            &wireframe_fill_material,
+            &mut atom_materials,
+            &group,
+            &overrides,
+            &settings,
+            &selection,
+        );
     }
     if settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
         for &(a, b) in &bonds {
@@ -1450,6 +1396,189 @@ fn polyhedron_material(settings: &VisualSettings) -> StandardMaterial {
         cull_mode: None,
         ..default()
     }
+}
+
+/// Group atoms at one rendered crystallographic position. A CIF represents a
+/// mixed site as multiple atom records at the same coordinates; drawing those
+/// records as ordinary spheres would make them z-fight and hide all but one
+/// component.
+fn render_atom_site_groups<'a>(
+    atoms: &'a [RenderAtom],
+    indices: &[usize],
+) -> Vec<Vec<&'a RenderAtom>> {
+    let mut group_indices: HashMap<[i64; 3], usize> = HashMap::new();
+    let mut groups: Vec<Vec<&RenderAtom>> = Vec::new();
+    for &index in indices {
+        let atom = &atoms[index];
+        let key = [
+            (atom.position.x * 10_000.0).round() as i64,
+            (atom.position.y * 10_000.0).round() as i64,
+            (atom.position.z * 10_000.0).round() as i64,
+        ];
+        let group = *group_indices.entry(key).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push(atom);
+    }
+    groups
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_render_atom_site(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    sphere_mesh: &Handle<Mesh>,
+    selection_material: &Handle<StandardMaterial>,
+    outline_material: &Handle<StandardMaterial>,
+    wireframe_fill_material: &Handle<StandardMaterial>,
+    atom_materials: &mut HashMap<String, Handle<StandardMaterial>>,
+    atoms: &[&RenderAtom],
+    overrides: &ElementOverrides,
+    settings: &VisualSettings,
+    selection: &SelectionState,
+) {
+    let Some(first) = atoms.first() else {
+        return;
+    };
+    let uses_sectors = atoms.len() > 1 || first.occupancy < 0.999;
+    let mut radius = atoms
+        .iter()
+        .map(|atom| resolved_style(&atom.element, overrides).display_radius)
+        .fold(0.0_f32, f32::max)
+        * settings.atom_scale;
+    if settings.atom_display_mode == AtomDisplayMode::SpaceFilling {
+        radius *= 1.55;
+    }
+    if !uses_sectors {
+        radius *= first.occupancy.max(0.15).cbrt();
+    }
+    let selected = atoms.iter().any(|atom| {
+        selection
+            .atoms
+            .iter()
+            .any(|selected| selected.matches(atom))
+    });
+    if selected {
+        commands.spawn((
+            Mesh3d(sphere_mesh.clone()),
+            MeshMaterial3d(selection_material.clone()),
+            Transform::from_translation(first.position).with_scale(Vec3::splat(radius * 1.18)),
+            CrystalVisual,
+        ));
+    }
+    let total_occupancy: f32 = atoms.iter().map(|atom| atom.occupancy.max(0.0)).sum();
+    let occupancy_scale = total_occupancy.max(1.0).recip();
+    let occupied_span = (total_occupancy * occupancy_scale).min(1.0) * std::f32::consts::TAU;
+    // In camera-local space +Z points from the site towards the camera. Start
+    // the occupied fan symmetrically around that direction.
+    let mut start = std::f32::consts::FRAC_PI_2 - occupied_span * 0.5;
+    for atom in atoms {
+        let fraction = (atom.occupancy.max(0.0) * occupancy_scale).min(1.0);
+        if fraction <= 1.0e-5 {
+            continue;
+        }
+        let style = resolved_style(&atom.element, overrides);
+        let material = atom_materials
+            .entry(atom.element.clone())
+            .or_insert_with(|| create_atom_material(materials, style, settings))
+            .clone();
+        let mesh = if uses_sectors {
+            meshes.add(occupancy_sector_mesh(
+                start,
+                start + fraction * std::f32::consts::TAU,
+            ))
+        } else {
+            sphere_mesh.clone()
+        };
+        if settings.show_outlines && settings.atom_display_mode != AtomDisplayMode::Wireframe {
+            let mut outline = commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(outline_material.clone()),
+                Transform::from_translation(atom.position).with_scale(Vec3::splat(radius * 1.025)),
+                CrystalVisual,
+            ));
+            if uses_sectors {
+                outline.insert(OccupancySector);
+            }
+        }
+        let mut entity = commands.spawn((
+            Name::new(if uses_sectors {
+                format!("{} {} occupancy sector", atom.element, atom.label)
+            } else {
+                format!("{} {}", atom.element, atom.label)
+            }),
+            Mesh3d(mesh),
+            MeshMaterial3d(
+                if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+                    wireframe_fill_material.clone()
+                } else {
+                    material
+                },
+            ),
+            Transform::from_translation(atom.position).with_scale(Vec3::splat(radius)),
+            AtomPickable {
+                atom: (*atom).clone(),
+                radius,
+            },
+            CrystalVisual,
+        ));
+        if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+            entity.insert((Wireframe, WireframeColor { color: style.color }));
+        }
+        if uses_sectors {
+            entity.insert(OccupancySector);
+        }
+        start += fraction * std::f32::consts::TAU;
+    }
+}
+
+/// Unit-sphere surface covering an azimuthal occupancy fraction. Leaving the
+/// unused azimuth range empty makes vacancies visible without alpha blending.
+fn occupancy_sector_mesh(start: f32, end: f32) -> Mesh {
+    const LATITUDE_SEGMENTS: usize = 20;
+    const FULL_AZIMUTH_SEGMENTS: f32 = 32.0;
+    let span = (end - start).clamp(0.0, std::f32::consts::TAU);
+    let azimuth_segments = ((span / std::f32::consts::TAU) * FULL_AZIMUTH_SEGMENTS)
+        .ceil()
+        .max(2.0) as usize;
+    let mut positions = Vec::with_capacity((LATITUDE_SEGMENTS + 1) * (azimuth_segments + 1));
+    let mut normals = Vec::with_capacity(positions.capacity());
+    for latitude in 0..=LATITUDE_SEGMENTS {
+        let theta = std::f32::consts::PI * latitude as f32 / LATITUDE_SEGMENTS as f32;
+        let y = theta.cos();
+        let radial = theta.sin();
+        for azimuth in 0..=azimuth_segments {
+            let phi = start + span * azimuth as f32 / azimuth_segments as f32;
+            let point = Vec3::new(radial * phi.cos(), y, radial * phi.sin());
+            positions.push(point.to_array());
+            normals.push(point.to_array());
+        }
+    }
+    let stride = azimuth_segments + 1;
+    let mut indices = Vec::with_capacity(LATITUDE_SEGMENTS * azimuth_segments * 6);
+    for latitude in 0..LATITUDE_SEGMENTS {
+        for azimuth in 0..azimuth_segments {
+            let top_left = (latitude * stride + azimuth) as u32;
+            let bottom_left = ((latitude + 1) * stride + azimuth) as u32;
+            indices.extend([
+                top_left,
+                top_left + 1,
+                bottom_left,
+                top_left + 1,
+                bottom_left + 1,
+                bottom_left,
+            ]);
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 fn make_render_atom(
