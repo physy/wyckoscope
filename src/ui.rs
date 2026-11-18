@@ -1725,18 +1725,16 @@ fn ui_bonds_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "BOND DISPLAY", |ui| {
-        if labeled_slider(ui, "Bond radius", &mut settings.bond_radius, 0.025..=0.24) {
-            dirty.mark(false);
-        }
         ui.label(
-            egui::RichText::new("Bonds are drawn only for enabled bond rules.")
-                .size(11.0)
-                .color(TEXT_SECONDARY),
+            egui::RichText::new(
+                "Bonds are drawn only for enabled bond rules; each rule has its own style.",
+            )
+            .size(11.0)
+            .color(TEXT_SECONDARY),
         );
     });
 
-    let bond_targets = bond_targets(state, settings.bond_match_mode);
-    ui_bond_rule_controls(ui, state, settings, overrides, dirty, &bond_targets);
+    ui_bond_rule_controls(ui, state, settings, overrides, dirty);
 
     section(ui, "POLYHEDRA", |ui| {
         let rule_polyhedra = settings
@@ -2120,31 +2118,22 @@ fn ui_bond_rule_controls(
     settings: &mut VisualSettings,
     overrides: &ElementOverrides,
     dirty: &mut SceneDirty,
-    targets: &[String],
 ) {
     section(ui, "BOND RULES", |ui| {
         let element_color_scheme = settings.element_color_scheme;
-        ui.horizontal(|ui| {
-            ui.label("Match by");
-            for mode in [BondMatchMode::Element, BondMatchMode::SiteLabel] {
-                if ui
-                    .radio_value(&mut settings.bond_match_mode, mode, mode.label())
-                    .changed()
-                {
-                    dirty.mark(false);
-                }
-            }
-        });
         ui.label(
             egui::RichText::new("Each rule defines an A1 center, A2 neighbor, and distance range.")
                 .size(11.0)
                 .color(TEXT_SECONDARY),
         );
         if ui.button("Add bond rule").clicked() {
-            let target = targets.first().cloned().unwrap_or_default();
+            let target = bond_targets(state, BondMatchMode::Element)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             let polyhedron_color = default_polyhedron_color(
                 &target,
-                settings.bond_match_mode,
+                BondMatchMode::Element,
                 state,
                 element_color_scheme,
                 overrides,
@@ -2159,6 +2148,7 @@ fn ui_bond_rule_controls(
         }
         let mut remove = None;
         for (index, rule) in settings.bond_rules.iter_mut().enumerate() {
+            let targets = bond_targets(state, rule.match_mode);
             egui::Frame::NONE
                 .fill(CARD_BACKGROUND)
                 .stroke(egui::Stroke::new(1.0, CARD_STROKE))
@@ -2168,9 +2158,6 @@ fn ui_bond_rule_controls(
                     ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut rule.enabled, "Enabled").changed() {
-                            dirty.mark(false);
-                        }
-                        if ui.checkbox(&mut rule.show_bonds, "Show bonds").changed() {
                             dirty.mark(false);
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2195,6 +2182,17 @@ fn ui_bond_rule_controls(
                             dirty.mark(false);
                         }
                     }
+                    ui.horizontal(|ui| {
+                        ui.label("Match by");
+                        for mode in [BondMatchMode::Element, BondMatchMode::SiteLabel] {
+                            if ui
+                                .radio_value(&mut rule.match_mode, mode, mode.label())
+                                .changed()
+                            {
+                                dirty.mark(false);
+                            }
+                        }
+                    });
                     ui.label(
                         egui::RichText::new("Boundary mode")
                             .size(11.0)
@@ -2220,7 +2218,7 @@ fn ui_bond_rule_controls(
                                 ui,
                                 ("bond_center", index),
                                 &mut rule.center,
-                                targets,
+                                &targets,
                             ) {
                                 dirty.mark(false);
                             }
@@ -2231,7 +2229,7 @@ fn ui_bond_rule_controls(
                                     ui,
                                     ("bond_neighbor", index),
                                     &mut rule.neighbor,
-                                    targets,
+                                    &targets,
                                 ) {
                                     dirty.mark(false);
                                 }
@@ -2266,6 +2264,39 @@ fn ui_bond_rule_controls(
                     {
                         dirty.mark(false);
                     }
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Bond style");
+                        egui::ComboBox::from_id_salt(("bond_style", index))
+                            .selected_text(rule.bond_style.label())
+                            .show_ui(ui, |ui| {
+                                for style in BondStyle::ALL {
+                                    if ui
+                                        .selectable_value(
+                                            &mut rule.bond_style,
+                                            style,
+                                            style.label(),
+                                        )
+                                        .changed()
+                                    {
+                                        dirty.mark(false);
+                                    }
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Bond color");
+                        if ui.color_edit_button_srgb(&mut rule.bond_color).changed() {
+                            dirty.mark(false);
+                        }
+                    });
+                    if labeled_slider(ui, "Bond radius (Å)", &mut rule.bond_radius, 0.005..=0.30) {
+                        dirty.mark(false);
+                    }
+                    if labeled_slider(ui, "Line width (px)", &mut rule.bond_pixel_width, 0.5..=8.0)
+                    {
+                        dirty.mark(false);
+                    }
                     if rule.show_polyhedra {
                         ui.add_space(5.0);
                         ui.horizontal(|ui| {
@@ -2279,7 +2310,7 @@ fn ui_bond_rule_controls(
                             if ui.button("Use A1 color").clicked() {
                                 rule.polyhedron_color = default_polyhedron_color(
                                     &rule.center,
-                                    settings.bond_match_mode,
+                                    rule.match_mode,
                                     state,
                                     element_color_scheme,
                                     overrides,

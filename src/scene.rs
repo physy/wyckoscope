@@ -534,11 +534,14 @@ pub(crate) fn rebuild_scene(
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    if settings
-        .bond_rules
-        .iter()
-        .any(|rule| rule.enabled && rule.boundary_mode == BondBoundaryMode::SearchAdditionalForA1)
-    {
+    if settings.bond_rules.iter().any(|rule| {
+        rule.enabled
+            && matches!(
+                rule.boundary_mode,
+                BondBoundaryMode::SearchAdditionalForA1
+                    | BondBoundaryMode::SearchRecursivelyIfEitherVisible
+            )
+    }) {
         for atom in &source_atoms {
             let fractional = canonical_fractional(atom.fractional);
             for ix in -1..=supercell[0] as i32 {
@@ -627,25 +630,21 @@ pub(crate) fn rebuild_scene(
         for &(a, b) in &bonds {
             let first = &render_atoms[a];
             let second = &render_atoms[b];
-            if !bond_is_displayed(first, second, &settings) {
+            let Some(rule) = displayed_bond_rule(first, second, &settings) else {
                 continue;
-            }
-            let midpoint = (first.position + second.position) * 0.5;
-            spawn_cylinder_between(
+            };
+            spawn_bond(
                 &mut commands,
-                cylinder_mesh.clone(),
+                &mut materials,
+                &cylinder_mesh,
+                &sphere_mesh,
                 atom_materials[&first.element].clone(),
-                first.position,
-                midpoint,
-                settings.bond_radius,
-            );
-            spawn_cylinder_between(
-                &mut commands,
-                cylinder_mesh.clone(),
                 atom_materials[&second.element].clone(),
-                midpoint,
+                resolved_style(&first.element, &overrides, settings.element_color_scheme).color,
+                resolved_style(&second.element, &overrides, settings.element_color_scheme).color,
+                first.position,
                 second.position,
-                settings.bond_radius,
+                rule,
             );
         }
     }
@@ -684,19 +683,14 @@ pub(crate) fn rebuild_scene(
             }
             let polyhedron_material = materials.add(polyhedron_material(rule));
             for (center_index, center_atom) in render_atoms.iter().enumerate() {
-                if !atom_matches(&rule.center, center_atom, settings.bond_match_mode) {
+                if !atom_matches(&rule.center, center_atom, rule.match_mode) {
                     continue;
                 }
                 let neighbors: Vec<_> = adjacency[center_index]
                     .iter()
                     .copied()
                     .filter(|&neighbor_index| {
-                        rule_matches_directed(
-                            center_atom,
-                            &render_atoms[neighbor_index],
-                            rule,
-                            settings.bond_match_mode,
-                        )
+                        rule_matches_directed(center_atom, &render_atoms[neighbor_index], rule)
                     })
                     .map(|neighbor_index| render_atoms[neighbor_index].position)
                     .collect();
@@ -2011,6 +2005,132 @@ fn spawn_cylinder_between(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn spawn_bond(
+    commands: &mut Commands,
+    materials: &mut Assets<StandardMaterial>,
+    cylinder_mesh: &Handle<Mesh>,
+    sphere_mesh: &Handle<Mesh>,
+    first_material: Handle<StandardMaterial>,
+    second_material: Handle<StandardMaterial>,
+    first_color: Color,
+    second_color: Color,
+    start: Vec3,
+    end: Vec3,
+    rule: &BondRule,
+) {
+    let solid_material = |color: [u8; 3], materials: &mut Assets<StandardMaterial>| {
+        materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(color[0], color[1], color[2]),
+            emissive: Color::srgb_u8(color[0], color[1], color[2]).to_linear() * 0.04,
+            perceptual_roughness: 0.32,
+            ..default()
+        })
+    };
+    let line_radius = (rule.bond_pixel_width * 0.004).clamp(0.006, 0.050);
+    match rule.bond_style {
+        BondStyle::UnicolorCylinder => {
+            spawn_cylinder_between(
+                commands,
+                cylinder_mesh.clone(),
+                solid_material(rule.bond_color, materials),
+                start,
+                end,
+                rule.bond_radius,
+            );
+        }
+        BondStyle::BicolorCylinder => {
+            let midpoint = (start + end) * 0.5;
+            spawn_cylinder_between(
+                commands,
+                cylinder_mesh.clone(),
+                first_material,
+                start,
+                midpoint,
+                rule.bond_radius,
+            );
+            spawn_cylinder_between(
+                commands,
+                cylinder_mesh.clone(),
+                second_material,
+                midpoint,
+                end,
+                rule.bond_radius,
+            );
+        }
+        BondStyle::ColorLine => {
+            spawn_cylinder_between(
+                commands,
+                cylinder_mesh.clone(),
+                solid_material(rule.bond_color, materials),
+                start,
+                end,
+                line_radius,
+            );
+        }
+        BondStyle::GradientLine => {
+            let first = first_color.to_srgba();
+            let second = second_color.to_srgba();
+            const SEGMENTS: usize = 10;
+            for segment in 0..SEGMENTS {
+                let from = segment as f32 / SEGMENTS as f32;
+                let to = (segment + 1) as f32 / SEGMENTS as f32;
+                let at = (from + to) * 0.5;
+                let color = Color::srgb(
+                    first.red + (second.red - first.red) * at,
+                    first.green + (second.green - first.green) * at,
+                    first.blue + (second.blue - first.blue) * at,
+                );
+                let material = materials.add(StandardMaterial {
+                    base_color: color,
+                    emissive: color.to_linear() * 0.04,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                });
+                spawn_cylinder_between(
+                    commands,
+                    cylinder_mesh.clone(),
+                    material,
+                    start.lerp(end, from),
+                    start.lerp(end, to),
+                    line_radius,
+                );
+            }
+        }
+        BondStyle::DottedLine => {
+            let material = solid_material(rule.bond_color, materials);
+            let length = start.distance(end);
+            let count = (length / (line_radius * 7.0).max(0.14)).ceil().max(2.0) as usize;
+            for index in 0..=count {
+                commands.spawn((
+                    Mesh3d(sphere_mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(start.lerp(end, index as f32 / count as f32))
+                        .with_scale(Vec3::splat(line_radius * 1.55)),
+                    CrystalVisual,
+                ));
+            }
+        }
+        BondStyle::DashedLine => {
+            let material = solid_material(rule.bond_color, materials);
+            let length = start.distance(end);
+            let count = (length / (line_radius * 20.0).max(0.38)).ceil().max(1.0) as usize;
+            for index in 0..count {
+                let from = index as f32 / count as f32;
+                let to = (from + 0.62 / count as f32).min(1.0);
+                spawn_cylinder_between(
+                    commands,
+                    cylinder_mesh.clone(),
+                    material.clone(),
+                    start.lerp(end, from),
+                    start.lerp(end, to),
+                    line_radius,
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_cell_edge(
     commands: &mut Commands,
     cylinder_mesh: Handle<Mesh>,
@@ -2080,15 +2200,17 @@ pub(crate) fn rule_matches_directed(
     center: &RenderAtom,
     neighbor: &RenderAtom,
     rule: &BondRule,
-    match_mode: BondMatchMode,
 ) -> bool {
-    atom_matches(&rule.center, center, match_mode)
+    atom_matches(&rule.center, center, rule.match_mode)
         && center.position.distance(neighbor.position) > 1.0e-4
         && center.position.distance(neighbor.position) >= rule.min_length.max(0.0)
         && center.position.distance(neighbor.position) <= rule.max_length.max(0.0)
         && match rule.search_mode {
-            BondSearchMode::A2BondedToA1 => atom_matches(&rule.neighbor, neighbor, match_mode),
-            BondSearchMode::AtomsBondedToA1 => true,
+            BondSearchMode::A2BondedToA1 => atom_matches(&rule.neighbor, neighbor, rule.match_mode),
+            // VESTA's molecule search needs a persistent molecular graph.
+            // Until such a graph exists, retain all candidate neighbors rather
+            // than silently dropping a valid imported rule.
+            BondSearchMode::AtomsBondedToA1 | BondSearchMode::Molecules => true,
         }
 }
 
@@ -2164,27 +2286,48 @@ fn rule_matches_with_boundary(
     center: &RenderAtom,
     neighbor: &RenderAtom,
     rule: &BondRule,
-    settings: &VisualSettings,
+    _settings: &VisualSettings,
     supercell: [f32; 3],
 ) -> bool {
-    rule_matches_directed(center, neighbor, rule, settings.bond_match_mode)
+    rule_matches_directed(center, neighbor, rule)
         && match rule.boundary_mode {
             BondBoundaryMode::DoNotSearchBeyond => {
                 atom_is_inside_supercell(center, supercell)
                     && atom_is_inside_supercell(neighbor, supercell)
             }
             BondBoundaryMode::SearchAdditionalForA1 => atom_is_inside_supercell(center, supercell),
+            BondBoundaryMode::SearchRecursivelyIfEitherVisible => {
+                atom_is_inside_supercell(center, supercell)
+                    || atom_is_inside_supercell(neighbor, supercell)
+            }
         }
 }
 
 fn bond_is_displayed(first: &RenderAtom, second: &RenderAtom, settings: &VisualSettings) -> bool {
+    displayed_bond_rule(first, second, settings).is_some()
+}
+
+fn displayed_bond_rule<'a>(
+    first: &RenderAtom,
+    second: &RenderAtom,
+    settings: &'a VisualSettings,
+) -> Option<&'a BondRule> {
     let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
-    settings.bond_rules.iter().any(|rule| {
+    let matches_rule = |rule: &BondRule| {
         rule.enabled
-            && rule.show_bonds
             && (rule_matches_with_boundary(first, second, rule, settings, supercell)
                 || rule_matches_with_boundary(second, first, rule, settings, supercell))
-    })
+    };
+    // A coordination polyhedron replaces every bond sharing its rule. This
+    // avoids opaque bond segments obscuring its faces and edges.
+    if settings
+        .bond_rules
+        .iter()
+        .any(|rule| rule.show_polyhedra && matches_rule(rule))
+    {
+        return None;
+    }
+    settings.bond_rules.iter().find(|rule| matches_rule(rule))
 }
 
 fn bond_supports_polyhedron(

@@ -3,8 +3,8 @@ use std::path::Path;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use wyckoscope::model::{
-    AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals,
-    SymmetryMetadata, UnitCell,
+    AtomSite, CrystalStructure, ImportedBondBoundaryMode, ImportedBondRule, ImportedBondSearchMode,
+    ImportedBondStyle, ImportedVector, ImportedVisuals, SymmetryMetadata, UnitCell,
 };
 
 use crate::{
@@ -393,7 +393,14 @@ struct ImportedBondRuleFile {
     neighbor: String,
     min_length: f32,
     max_length: f32,
+    search_mode: ImportedBondSearchMode,
+    boundary_mode: ImportedBondBoundaryMode,
     show_polyhedra: bool,
+    match_by_label: bool,
+    style: ImportedBondStyle,
+    radius: f32,
+    pixel_width: f32,
+    color: [u8; 3],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -565,7 +572,14 @@ impl From<ImportedVisuals> for ImportedVisualsFile {
                     neighbor: rule.neighbor,
                     min_length: rule.min_length,
                     max_length: rule.max_length,
+                    search_mode: rule.search_mode,
+                    boundary_mode: rule.boundary_mode,
                     show_polyhedra: rule.show_polyhedra,
+                    match_by_label: rule.match_by_label,
+                    style: rule.style,
+                    radius: rule.radius,
+                    pixel_width: rule.pixel_width,
+                    color: rule.color,
                 })
                 .collect(),
             vectors: visuals
@@ -596,7 +610,14 @@ impl From<ImportedVisualsFile> for ImportedVisuals {
                     neighbor: rule.neighbor,
                     min_length: rule.min_length,
                     max_length: rule.max_length,
+                    search_mode: rule.search_mode,
+                    boundary_mode: rule.boundary_mode,
                     show_polyhedra: rule.show_polyhedra,
+                    match_by_label: rule.match_by_label,
+                    style: rule.style,
+                    radius: rule.radius,
+                    pixel_width: rule.pixel_width,
+                    color: rule.color,
                 })
                 .collect(),
             vectors: visuals

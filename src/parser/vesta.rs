@@ -3,7 +3,8 @@ use bevy::prelude::{Mat3, Vec3};
 use crate::{
     elements::normalize_symbol,
     model::{
-        AtomSite, CrystalStructure, ImportedBondRule, ImportedVector, ImportedVisuals, SiteId,
+        AtomSite, CrystalStructure, ImportedBondBoundaryMode, ImportedBondRule,
+        ImportedBondSearchMode, ImportedBondStyle, ImportedVector, ImportedVisuals, SiteId,
         SourceFormat, SymmetryMetadata, UnitCell,
     },
 };
@@ -382,8 +383,48 @@ fn parse_bond_rules(lines: &[&str]) -> Vec<ImportedBondRule> {
                 neighbor: values[2].to_string(),
                 min_length: values[3].parse().ok()?,
                 max_length: values[4].parse().ok()?,
-                // In VESTA's SBOND records this flag follows the drawing-boundary fields.
-                show_polyhedra: values.get(8).is_some_and(|value| *value == "1"),
+                search_mode: match values.get(5).copied().unwrap_or("0") {
+                    "1" => ImportedBondSearchMode::AtomsBondedToA1,
+                    "2" => ImportedBondSearchMode::Molecules,
+                    _ => ImportedBondSearchMode::A2BondedToA1,
+                },
+                boundary_mode: match values.get(6).copied().unwrap_or("0") {
+                    "1" => ImportedBondBoundaryMode::SearchAdditionalForA1,
+                    "2" => ImportedBondBoundaryMode::SearchRecursivelyIfEitherVisible,
+                    _ => ImportedBondBoundaryMode::DoNotSearchBeyond,
+                },
+                show_polyhedra: values.get(7).is_some_and(|value| *value == "1"),
+                match_by_label: values.get(8).is_some_and(|value| *value == "1"),
+                style: match values.get(9).copied().unwrap_or("1") {
+                    "0" => ImportedBondStyle::UnicolorCylinder,
+                    "2" => ImportedBondStyle::ColorLine,
+                    "3" => ImportedBondStyle::GradientLine,
+                    "4" => ImportedBondStyle::DottedLine,
+                    "5" => ImportedBondStyle::DashedLine,
+                    _ => ImportedBondStyle::BicolorCylinder,
+                },
+                radius: values
+                    .get(10)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0.095),
+                pixel_width: values
+                    .get(11)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(2.0),
+                color: [
+                    values
+                        .get(12)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(127),
+                    values
+                        .get(13)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(127),
+                    values
+                        .get(14)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(127),
+                ],
             })
         })
         .collect()
@@ -488,7 +529,7 @@ VECTT
 1 0.5 255 0 0 2
 0 0 0 0 0
 SBOND
-1 Fe O 0.0 2.4 0 0 1 0 1
+1 Fe O 0.0 2.4 0 1 1 0 1 0.250 2.000 127 127 127
 0 0 0 0
 BKGRC
 12 34 56
@@ -500,6 +541,18 @@ VECTS 0.4
         assert_eq!(structure.symmetry_operation_count, 2);
         assert_eq!(structure.imported_visuals.background, Some([12, 34, 56]));
         assert_eq!(structure.imported_visuals.bond_rules.len(), 1);
+        let bond = &structure.imported_visuals.bond_rules[0];
+        assert_eq!(bond.search_mode, ImportedBondSearchMode::A2BondedToA1);
+        assert_eq!(
+            bond.boundary_mode,
+            ImportedBondBoundaryMode::SearchAdditionalForA1
+        );
+        assert!(bond.show_polyhedra);
+        assert!(!bond.match_by_label);
+        assert_eq!(bond.style, ImportedBondStyle::BicolorCylinder);
+        assert!((bond.radius - 0.25).abs() < 1.0e-5);
+        assert!((bond.pixel_width - 2.0).abs() < 1.0e-5);
+        assert_eq!(bond.color, [127, 127, 127]);
         assert_eq!(structure.imported_visuals.vectors.len(), 1);
         let vector = &structure.imported_visuals.vectors[0];
         assert_eq!(vector.label, "Fe1");

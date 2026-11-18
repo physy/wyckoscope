@@ -292,6 +292,7 @@ impl BondMatchMode {
 pub(crate) enum BondSearchMode {
     A2BondedToA1,
     AtomsBondedToA1,
+    Molecules,
 }
 
 impl BondSearchMode {
@@ -299,6 +300,7 @@ impl BondSearchMode {
         match self {
             Self::A2BondedToA1 => "Search A2 bonded to A1",
             Self::AtomsBondedToA1 => "Search atoms bonded to A1",
+            Self::Molecules => "Search molecules",
         }
     }
 }
@@ -307,6 +309,7 @@ impl BondSearchMode {
 pub(crate) enum BondBoundaryMode {
     DoNotSearchBeyond,
     SearchAdditionalForA1,
+    SearchRecursivelyIfEitherVisible,
 }
 
 impl BondBoundaryMode {
@@ -316,6 +319,41 @@ impl BondBoundaryMode {
             Self::SearchAdditionalForA1 => {
                 "Search additional atoms if A1 is included in the boundary"
             }
+            Self::SearchRecursivelyIfEitherVisible => {
+                "Search additional atoms recursively if either A1 or A2 is visible"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum BondStyle {
+    UnicolorCylinder,
+    BicolorCylinder,
+    ColorLine,
+    GradientLine,
+    DottedLine,
+    DashedLine,
+}
+
+impl BondStyle {
+    pub(crate) const ALL: [Self; 6] = [
+        Self::UnicolorCylinder,
+        Self::BicolorCylinder,
+        Self::ColorLine,
+        Self::GradientLine,
+        Self::DottedLine,
+        Self::DashedLine,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::UnicolorCylinder => "Unicolor cylinder",
+            Self::BicolorCylinder => "Bicolor cylinder",
+            Self::ColorLine => "Color line",
+            Self::GradientLine => "Gradient line",
+            Self::DottedLine => "Dotted line",
+            Self::DashedLine => "Dashed line",
         }
     }
 }
@@ -323,13 +361,17 @@ impl BondBoundaryMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BondRule {
     pub(crate) enabled: bool,
-    pub(crate) show_bonds: bool,
+    pub(crate) match_mode: BondMatchMode,
     pub(crate) search_mode: BondSearchMode,
     pub(crate) boundary_mode: BondBoundaryMode,
     pub(crate) center: String,
     pub(crate) neighbor: String,
     pub(crate) min_length: f32,
     pub(crate) max_length: f32,
+    pub(crate) bond_style: BondStyle,
+    pub(crate) bond_radius: f32,
+    pub(crate) bond_pixel_width: f32,
+    pub(crate) bond_color: [u8; 3],
     pub(crate) show_polyhedra: bool,
     pub(crate) polyhedron_color: [u8; 3],
     pub(crate) polyhedron_opacity: f32,
@@ -339,13 +381,17 @@ impl Default for BondRule {
     fn default() -> Self {
         Self {
             enabled: true,
-            show_bonds: true,
+            match_mode: BondMatchMode::Element,
             search_mode: BondSearchMode::A2BondedToA1,
             boundary_mode: BondBoundaryMode::SearchAdditionalForA1,
             center: String::new(),
             neighbor: String::new(),
             min_length: 0.0,
             max_length: 2.5,
+            bond_style: BondStyle::BicolorCylinder,
+            bond_radius: 0.095,
+            bond_pixel_width: 2.0,
+            bond_color: [127, 127, 127],
             show_polyhedra: true,
             polyhedron_color: [74, 164, 255],
             polyhedron_opacity: 0.50,
@@ -721,8 +767,6 @@ pub(crate) struct VisualSettings {
     pub(crate) show_thermal_ellipsoids: bool,
     pub(crate) thermal_ellipsoid_scale: f32,
     pub(crate) scene_objects: SceneObjects,
-    pub(crate) bond_radius: f32,
-    pub(crate) bond_match_mode: BondMatchMode,
     pub(crate) bond_rules: Vec<BondRule>,
     pub(crate) atom_display_mode: AtomDisplayMode,
     pub(crate) polyhedron_show_edges: bool,
@@ -764,8 +808,6 @@ impl Default for VisualSettings {
             show_thermal_ellipsoids: false,
             thermal_ellipsoid_scale: 2.45,
             scene_objects: SceneObjects::default(),
-            bond_radius: 0.095,
-            bond_match_mode: BondMatchMode::Element,
             bond_rules: Vec::new(),
             atom_display_mode: AtomDisplayMode::BallAndStick,
             polyhedron_show_edges: true,

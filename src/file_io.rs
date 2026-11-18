@@ -356,19 +356,55 @@ fn apply_imported_visuals(
                 .map(|moment| VectorLayer::magnetic_moment_site(atom.site_id, moment))
         }));
     if structure.source_format == wyckoscope::model::SourceFormat::Vesta {
-        settings.bond_match_mode = BondMatchMode::Element;
         settings.bond_rules = visuals
             .bond_rules
             .iter()
             .map(|rule| BondRule {
                 enabled: true,
-                show_bonds: true,
-                search_mode: BondSearchMode::A2BondedToA1,
-                boundary_mode: BondBoundaryMode::SearchAdditionalForA1,
+                match_mode: if rule.match_by_label {
+                    BondMatchMode::SiteLabel
+                } else {
+                    BondMatchMode::Element
+                },
+                search_mode: match rule.search_mode {
+                    wyckoscope::model::ImportedBondSearchMode::A2BondedToA1 => {
+                        BondSearchMode::A2BondedToA1
+                    }
+                    wyckoscope::model::ImportedBondSearchMode::AtomsBondedToA1 => {
+                        BondSearchMode::AtomsBondedToA1
+                    }
+                    wyckoscope::model::ImportedBondSearchMode::Molecules => BondSearchMode::Molecules,
+                },
+                boundary_mode: match rule.boundary_mode {
+                    wyckoscope::model::ImportedBondBoundaryMode::DoNotSearchBeyond => {
+                        BondBoundaryMode::DoNotSearchBeyond
+                    }
+                    wyckoscope::model::ImportedBondBoundaryMode::SearchAdditionalForA1 => {
+                        BondBoundaryMode::SearchAdditionalForA1
+                    }
+                    wyckoscope::model::ImportedBondBoundaryMode::SearchRecursivelyIfEitherVisible => {
+                        BondBoundaryMode::SearchRecursivelyIfEitherVisible
+                    }
+                },
                 center: rule.center.clone(),
                 neighbor: rule.neighbor.clone(),
                 min_length: rule.min_length,
                 max_length: rule.max_length,
+                bond_style: match rule.style {
+                    wyckoscope::model::ImportedBondStyle::UnicolorCylinder => {
+                        BondStyle::UnicolorCylinder
+                    }
+                    wyckoscope::model::ImportedBondStyle::BicolorCylinder => {
+                        BondStyle::BicolorCylinder
+                    }
+                    wyckoscope::model::ImportedBondStyle::ColorLine => BondStyle::ColorLine,
+                    wyckoscope::model::ImportedBondStyle::GradientLine => BondStyle::GradientLine,
+                    wyckoscope::model::ImportedBondStyle::DottedLine => BondStyle::DottedLine,
+                    wyckoscope::model::ImportedBondStyle::DashedLine => BondStyle::DashedLine,
+                },
+                bond_radius: rule.radius,
+                bond_pixel_width: rule.pixel_width,
+                bond_color: rule.color,
                 show_polyhedra: rule.show_polyhedra,
                 polyhedron_color: wyckoscope::elements::style_for_scheme(
                     &rule.center,

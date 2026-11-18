@@ -150,7 +150,38 @@ pub struct ImportedBondRule {
     pub neighbor: String,
     pub min_length: f32,
     pub max_length: f32,
+    pub search_mode: ImportedBondSearchMode,
+    pub boundary_mode: ImportedBondBoundaryMode,
     pub show_polyhedra: bool,
+    pub match_by_label: bool,
+    pub style: ImportedBondStyle,
+    pub radius: f32,
+    pub pixel_width: f32,
+    pub color: [u8; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportedBondSearchMode {
+    A2BondedToA1,
+    AtomsBondedToA1,
+    Molecules,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportedBondBoundaryMode {
+    DoNotSearchBeyond,
+    SearchAdditionalForA1,
+    SearchRecursivelyIfEitherVisible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportedBondStyle {
+    UnicolorCylinder,
+    BicolorCylinder,
+    ColorLine,
+    GradientLine,
+    DottedLine,
+    DashedLine,
 }
 
 #[derive(Debug, Clone)]
