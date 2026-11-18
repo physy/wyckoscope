@@ -331,6 +331,8 @@ pub(crate) struct BondRule {
     pub(crate) min_length: f32,
     pub(crate) max_length: f32,
     pub(crate) show_polyhedra: bool,
+    pub(crate) polyhedron_color: [u8; 3],
+    pub(crate) polyhedron_opacity: f32,
 }
 
 impl Default for BondRule {
@@ -345,6 +347,8 @@ impl Default for BondRule {
             min_length: 0.0,
             max_length: 2.5,
             show_polyhedra: true,
+            polyhedron_color: [74, 164, 255],
+            polyhedron_opacity: 0.50,
         }
     }
 }
@@ -721,8 +725,6 @@ pub(crate) struct VisualSettings {
     pub(crate) bond_match_mode: BondMatchMode,
     pub(crate) bond_rules: Vec<BondRule>,
     pub(crate) atom_display_mode: AtomDisplayMode,
-    pub(crate) polyhedron_color: [u8; 3],
-    pub(crate) polyhedron_opacity: f32,
     pub(crate) polyhedron_show_edges: bool,
     pub(crate) polyhedron_edge_radius: f32,
     pub(crate) polyhedron_edge_color: [u8; 3],
@@ -766,8 +768,6 @@ impl Default for VisualSettings {
             bond_match_mode: BondMatchMode::Element,
             bond_rules: Vec::new(),
             atom_display_mode: AtomDisplayMode::BallAndStick,
-            polyhedron_color: [74, 164, 255],
-            polyhedron_opacity: 0.50,
             polyhedron_show_edges: true,
             polyhedron_edge_radius: 0.015,
             polyhedron_edge_color: [255, 255, 255],

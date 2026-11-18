@@ -660,7 +660,6 @@ pub(crate) fn rebuild_scene(
             adjacency[first].push(second);
             adjacency[second].push(first);
         }
-        let polyhedron_material = materials.add(polyhedron_material(&settings));
         let edge_material = settings.polyhedron_show_edges.then(|| {
             materials.add(StandardMaterial {
                 base_color: Color::srgb_u8(
@@ -683,6 +682,7 @@ pub(crate) fn rebuild_scene(
             if !rule.enabled || !rule.show_polyhedra {
                 continue;
             }
+            let polyhedron_material = materials.add(polyhedron_material(rule));
             for (center_index, center_atom) in render_atoms.iter().enumerate() {
                 if !atom_matches(&rule.center, center_atom, settings.bond_match_mode) {
                     continue;
@@ -1412,13 +1412,13 @@ fn cell_edge_key(first: Vec3, second: Vec3) -> ([i64; 3], [i64; 3]) {
     }
 }
 
-fn polyhedron_material(settings: &VisualSettings) -> StandardMaterial {
+fn polyhedron_material(rule: &BondRule) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgba(
-            settings.polyhedron_color[0] as f32 / 255.0,
-            settings.polyhedron_color[1] as f32 / 255.0,
-            settings.polyhedron_color[2] as f32 / 255.0,
-            settings.polyhedron_opacity,
+            rule.polyhedron_color[0] as f32 / 255.0,
+            rule.polyhedron_color[1] as f32 / 255.0,
+            rule.polyhedron_color[2] as f32 / 255.0,
+            rule.polyhedron_opacity,
         ),
         alpha_mode: AlphaMode::Blend,
         metallic: 0.08,

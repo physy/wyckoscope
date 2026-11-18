@@ -370,6 +370,14 @@ fn apply_imported_visuals(
                 min_length: rule.min_length,
                 max_length: rule.max_length,
                 show_polyhedra: rule.show_polyhedra,
+                polyhedron_color: wyckoscope::elements::style_for_scheme(
+                    &rule.center,
+                    settings.element_color_scheme,
+                )
+                .color
+                .to_srgba()
+                .to_u8_array_no_alpha(),
+                polyhedron_opacity: BondRule::default().polyhedron_opacity,
             })
             .collect();
         settings

@@ -120,7 +120,9 @@ pub(crate) fn interface(
                     InspectorTab::Vectors => {
                         ui_vectors_tab(ui, &state, &mut settings, &selection, &mut dirty)
                     }
-                    InspectorTab::Bonds => ui_bonds_tab(ui, &state, &mut settings, &mut dirty),
+                    InspectorTab::Bonds => {
+                        ui_bonds_tab(ui, &state, &mut settings, &overrides, &mut dirty)
+                    }
                     InspectorTab::View => {
                         let (orbit, _, _, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
@@ -1719,6 +1721,7 @@ fn ui_bonds_tab(
     ui: &mut egui::Ui,
     state: &AppState,
     settings: &mut VisualSettings,
+    overrides: &ElementOverrides,
     dirty: &mut SceneDirty,
 ) {
     section(ui, "BOND DISPLAY", |ui| {
@@ -1733,7 +1736,7 @@ fn ui_bonds_tab(
     });
 
     let bond_targets = bond_targets(state, settings.bond_match_mode);
-    ui_bond_rule_controls(ui, settings, dirty, &bond_targets);
+    ui_bond_rule_controls(ui, state, settings, overrides, dirty, &bond_targets);
 
     section(ui, "POLYHEDRA", |ui| {
         let rule_polyhedra = settings
@@ -1751,18 +1754,11 @@ fn ui_bonds_tab(
             );
         }
         if rule_polyhedra > 0 {
-            ui.horizontal(|ui| {
-                ui.label("Color");
-                if ui
-                    .color_edit_button_srgb(&mut settings.polyhedron_color)
-                    .changed()
-                {
-                    dirty.mark(false);
-                }
-            });
-            if labeled_slider(ui, "Opacity", &mut settings.polyhedron_opacity, 0.05..=0.85) {
-                dirty.mark(false);
-            }
+            ui.label(
+                egui::RichText::new("Color and opacity are configured on each bond rule.")
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+            );
             if ui
                 .checkbox(&mut settings.polyhedron_show_edges, "Show edges")
                 .changed()
@@ -2073,6 +2069,29 @@ fn bond_targets(state: &AppState, mode: BondMatchMode) -> Vec<String> {
     targets
 }
 
+fn default_polyhedron_color(
+    target: &str,
+    match_mode: BondMatchMode,
+    state: &AppState,
+    scheme: wyckoscope::elements::ElementColorScheme,
+    overrides: &ElementOverrides,
+) -> [u8; 3] {
+    let symbol = match match_mode {
+        BondMatchMode::Element => target,
+        BondMatchMode::SiteLabel => state
+            .structure
+            .asymmetric_atoms
+            .iter()
+            .find(|atom| atom.label.eq_ignore_ascii_case(target))
+            .map_or(target, |atom| atom.element.as_str()),
+    };
+    overrides
+        .0
+        .get(symbol)
+        .map(|appearance| appearance.color)
+        .unwrap_or_else(|| default_appearance(symbol, scheme).color)
+}
+
 fn bond_target_combo(
     ui: &mut egui::Ui,
     id: impl std::hash::Hash,
@@ -2097,11 +2116,14 @@ fn bond_target_combo(
 
 fn ui_bond_rule_controls(
     ui: &mut egui::Ui,
+    state: &AppState,
     settings: &mut VisualSettings,
+    overrides: &ElementOverrides,
     dirty: &mut SceneDirty,
     targets: &[String],
 ) {
     section(ui, "BOND RULES", |ui| {
+        let element_color_scheme = settings.element_color_scheme;
         ui.horizontal(|ui| {
             ui.label("Match by");
             for mode in [BondMatchMode::Element, BondMatchMode::SiteLabel] {
@@ -2120,9 +2142,17 @@ fn ui_bond_rule_controls(
         );
         if ui.button("Add bond rule").clicked() {
             let target = targets.first().cloned().unwrap_or_default();
+            let polyhedron_color = default_polyhedron_color(
+                &target,
+                settings.bond_match_mode,
+                state,
+                element_color_scheme,
+                overrides,
+            );
             settings.bond_rules.push(BondRule {
                 center: target.clone(),
                 neighbor: target,
+                polyhedron_color,
                 ..default()
             });
             dirty.mark(false);
@@ -2235,6 +2265,36 @@ fn ui_bond_rule_controls(
                         .changed()
                     {
                         dirty.mark(false);
+                    }
+                    if rule.show_polyhedra {
+                        ui.add_space(5.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Polyhedron color");
+                            if ui
+                                .color_edit_button_srgb(&mut rule.polyhedron_color)
+                                .changed()
+                            {
+                                dirty.mark(false);
+                            }
+                            if ui.button("Use A1 color").clicked() {
+                                rule.polyhedron_color = default_polyhedron_color(
+                                    &rule.center,
+                                    settings.bond_match_mode,
+                                    state,
+                                    element_color_scheme,
+                                    overrides,
+                                );
+                                dirty.mark(false);
+                            }
+                        });
+                        if labeled_slider(
+                            ui,
+                            "Polyhedron opacity",
+                            &mut rule.polyhedron_opacity,
+                            0.05..=0.85,
+                        ) {
+                            dirty.mark(false);
+                        }
                     }
                 });
             ui.add_space(7.0);
