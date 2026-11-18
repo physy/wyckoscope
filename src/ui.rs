@@ -127,7 +127,7 @@ pub(crate) fn interface(
                     }
                     InspectorTab::Lighting => ui_lighting_tab(ui, &mut settings),
                     InspectorTab::Elements => {
-                        ui_elements_tab(ui, &state, &mut overrides, &mut dirty)
+                        ui_elements_tab(ui, &state, &mut settings, &mut overrides, &mut dirty)
                     }
                 });
         });
@@ -549,7 +549,7 @@ fn draw_element_legend_item(
         .0
         .get(symbol)
         .cloned()
-        .unwrap_or_else(|| default_appearance(symbol));
+        .unwrap_or_else(|| default_appearance(symbol, settings.element_color_scheme));
     let color = egui::Color32::from_rgb(
         appearance.color[0],
         appearance.color[1],
@@ -2492,14 +2492,52 @@ fn integer_vector3_control(ui: &mut egui::Ui, label: &str, values: &mut [i32; 3]
 fn ui_elements_tab(
     ui: &mut egui::Ui,
     state: &AppState,
+    settings: &mut VisualSettings,
     overrides: &mut ElementOverrides,
     dirty: &mut SceneDirty,
 ) {
     section(ui, "ELEMENT STYLES", |ui| {
+        let old_scheme = settings.element_color_scheme;
+        ui.horizontal(|ui| {
+            ui.label("Color scheme");
+            egui::ComboBox::from_id_salt("element_color_scheme")
+                .selected_text(settings.element_color_scheme.label())
+                .show_ui(ui, |ui| {
+                    for scheme in wyckoscope::elements::ElementColorScheme::ALL {
+                        ui.selectable_value(
+                            &mut settings.element_color_scheme,
+                            scheme,
+                            scheme.label(),
+                        );
+                    }
+                });
+        });
+        if settings.element_color_scheme != old_scheme {
+            // Older versions materialized a default override as soon as this
+            // tab was opened. An appearance whose colour is still that old
+            // default should follow the new palette; radius and visibility
+            // remain independent customizations.
+            for (symbol, appearance) in &mut overrides.0 {
+                let old_default = default_appearance(symbol, old_scheme);
+                if appearance.color == old_default.color {
+                    appearance.color =
+                        default_appearance(symbol, settings.element_color_scheme).color;
+                }
+            }
+            // Drop fully-default entries so the selected palette remains the
+            // single source of truth for uncustomized elements.
+            overrides.0.retain(|symbol, appearance| {
+                *appearance != default_appearance(symbol, settings.element_color_scheme)
+            });
+            dirty.mark(false);
+        }
+        ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("Set the color and visual radius for each element.")
-                .size(11.0)
-                .color(TEXT_SECONDARY),
+            egui::RichText::new(
+                "The selected scheme supplies defaults. Individual edits take priority.",
+            )
+            .size(11.0)
+            .color(TEXT_SECONDARY),
         );
         let mut symbols: Vec<_> = state
             .structure
@@ -2511,8 +2549,14 @@ fn ui_elements_tab(
             .collect();
         symbols.sort();
         for symbol in symbols {
-            let default = default_appearance(&symbol);
-            let appearance = overrides.0.entry(symbol.clone()).or_insert(default.clone());
+            let default = default_appearance(&symbol, settings.element_color_scheme);
+            let mut appearance = overrides
+                .0
+                .get(&symbol)
+                .cloned()
+                .unwrap_or_else(|| default.clone());
+            let mut reset = false;
+            let mut changed = false;
             egui::Frame::NONE
                 .fill(CARD_BACKGROUND)
                 .stroke(egui::Stroke::new(1.0, CARD_STROKE))
@@ -2534,21 +2578,28 @@ fn ui_elements_tab(
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Reset").clicked() {
-                                *appearance = default.clone();
-                                dirty.mark(false);
+                                reset = true;
                             }
                             if ui.color_edit_button_srgb(&mut appearance.color).changed() {
-                                dirty.mark(false);
+                                changed = true;
                             }
                             if ui.checkbox(&mut appearance.visible, "Visible").changed() {
-                                dirty.mark(false);
+                                changed = true;
                             }
                         });
                     });
                     if labeled_slider(ui, "Radius (Å)", &mut appearance.radius, 0.1..=2.5) {
-                        dirty.mark(false);
+                        changed = true;
                     }
                 });
+            if reset {
+                if overrides.0.remove(&symbol).is_some() {
+                    dirty.mark(false);
+                }
+            } else if changed {
+                overrides.0.insert(symbol.clone(), appearance);
+                dirty.mark(false);
+            }
             ui.add_space(7.0);
         }
         if ui

@@ -276,11 +276,12 @@ pub(crate) fn rebuild_legend_previews(
         .collect();
     symbols.sort_unstable();
     let fingerprint = format!(
-        "{:?}|{:.3}|{:.3}|{:.3}|{:?}",
+        "{:?}|{:.3}|{:.3}|{:.3}|{:?}|{:?}",
         symbols,
         settings.atom_metallic,
         settings.atom_roughness,
         settings.atom_reflectance,
+        settings.element_color_scheme,
         overrides.0
     );
     if previews.fingerprint == fingerprint {
@@ -309,7 +310,7 @@ pub(crate) fn rebuild_legend_previews(
     ));
     for (index, symbol) in symbols.into_iter().enumerate() {
         let x = index as f32 * 5.0;
-        let style = resolved_style(&symbol, &overrides);
+        let style = resolved_style(&symbol, &overrides, settings.element_color_scheme);
         let material = materials.add(StandardMaterial {
             base_color: style.color,
             emissive: style.color.to_linear() * 0.035,
@@ -601,7 +602,7 @@ pub(crate) fn rebuild_scene(
             let Some(displacement) = atom.anisotropic_u else {
                 continue;
             };
-            let style = resolved_style(&atom.element, &overrides);
+            let style = resolved_style(&atom.element, &overrides, settings.element_color_scheme);
             let material = ellipsoid_materials
                 .entry(atom.element.clone())
                 .or_insert_with(|| thermal_ellipsoid_material(&mut materials, style, &settings))
@@ -755,7 +756,8 @@ pub(crate) fn rebuild_scene(
                 && vector_matches_atom(&vector.target, atom)
         }) {
             let direction = resolved_vector_direction(vector, atom, &structure.cell);
-            let radius = resolved_style(&atom.element, &overrides).display_radius
+            let radius = resolved_style(&atom.element, &overrides, settings.element_color_scheme)
+                .display_radius
                 * settings.atom_scale
                 * atom.occupancy.max(0.15).cbrt();
             spawn_atom_vector(
@@ -1473,7 +1475,9 @@ fn spawn_render_atom_site(
     let uses_sectors = atoms.len() > 1 || first.occupancy < 0.999;
     let mut radius = atoms
         .iter()
-        .map(|atom| resolved_style(&atom.element, overrides).display_radius)
+        .map(|atom| {
+            resolved_style(&atom.element, overrides, settings.element_color_scheme).display_radius
+        })
         .fold(0.0_f32, f32::max)
         * settings.atom_scale;
     if settings.atom_display_mode == AtomDisplayMode::SpaceFilling {
@@ -1507,7 +1511,7 @@ fn spawn_render_atom_site(
         if fraction <= 1.0e-5 {
             continue;
         }
-        let style = resolved_style(&atom.element, overrides);
+        let style = resolved_style(&atom.element, overrides, settings.element_color_scheme);
         let material = atom_materials
             .entry(atom.element.clone())
             .or_insert_with(|| create_atom_material(materials, style, settings))
@@ -1815,8 +1819,12 @@ fn coordination_polyhedron(neighbors: &[Vec3]) -> Option<PolyhedronGeometry> {
     })
 }
 
-fn resolved_style(symbol: &str, overrides: &ElementOverrides) -> ElementStyle {
-    let base = elements::style(symbol);
+fn resolved_style(
+    symbol: &str,
+    overrides: &ElementOverrides,
+    scheme: elements::ElementColorScheme,
+) -> ElementStyle {
+    let base = elements::style_for_scheme(symbol, scheme);
     overrides
         .0
         .get(symbol)
@@ -1831,8 +1839,11 @@ fn resolved_style(symbol: &str, overrides: &ElementOverrides) -> ElementStyle {
         })
 }
 
-pub(crate) fn default_appearance(symbol: &str) -> ElementAppearance {
-    let style = elements::style(symbol);
+pub(crate) fn default_appearance(
+    symbol: &str,
+    scheme: elements::ElementColorScheme,
+) -> ElementAppearance {
+    let style = elements::style_for_scheme(symbol, scheme);
     ElementAppearance {
         color: style.color.to_srgba().to_u8_array_no_alpha(),
         radius: style.display_radius,

@@ -7,7 +7,10 @@ use std::{
 use bevy::prelude::*;
 use bevy_egui::egui;
 use serde::{Deserialize, Serialize};
-use wyckoscope::model::{CrystalStructure, SiteId};
+use wyckoscope::{
+    elements::ElementColorScheme,
+    model::{CrystalStructure, SiteId},
+};
 
 #[derive(Resource)]
 pub(crate) struct AppState {
@@ -710,6 +713,7 @@ pub(crate) struct VisualSettings {
     pub(crate) atom_metallic: f32,
     pub(crate) atom_roughness: f32,
     pub(crate) atom_reflectance: f32,
+    pub(crate) element_color_scheme: ElementColorScheme,
     pub(crate) show_thermal_ellipsoids: bool,
     pub(crate) thermal_ellipsoid_scale: f32,
     pub(crate) scene_objects: SceneObjects,
@@ -754,6 +758,7 @@ impl Default for VisualSettings {
             atom_metallic: 0.52,
             atom_roughness: 0.29,
             atom_reflectance: 0.53,
+            element_color_scheme: ElementColorScheme::default(),
             show_thermal_ellipsoids: false,
             thermal_ellipsoid_scale: 2.45,
             scene_objects: SceneObjects::default(),
@@ -790,7 +795,7 @@ impl Default for VisualSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct ElementAppearance {
     pub(crate) color: [u8; 3],
