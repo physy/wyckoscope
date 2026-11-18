@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::{Mat3, Vec3};
+use cryspglib::Crystal;
 use cryspglib::spg_database::{SPACEGROUP_TYPES, get_spacegroup_operations};
 
 use crate::{
@@ -112,6 +113,7 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
 
     let mut warnings = Vec::new();
     let magnetic_moments = magnetic_moments(&loops, &cell, &mut warnings);
+    let anisotropic_displacements = anisotropic_displacements(&loops, &mut warnings);
     let mut base_atoms = Vec::new();
     for row in atom_loop.values.chunks(atom_loop.tags.len()) {
         if row.len() != atom_loop.tags.len() {
@@ -150,6 +152,7 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             .and_then(|i| row.get(i))
             .and_then(|value| clean_text(value));
         let magnetic_moment = magnetic_moments.get(&label).copied();
+        let anisotropic_u = anisotropic_displacements.get(&label).copied();
         base_atoms.push(AtomSite {
             site_id: SiteId(base_atoms.len() as u64),
             element: normalize_symbol(raw_symbol),
@@ -158,6 +161,9 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             fractional_as_written: fractional,
             occupancy,
             u_iso,
+            anisotropic_u,
+            wyckoff_position: None,
+            site_symmetry: None,
             disorder_assembly,
             disorder_group,
             symmetry_rotation: Mat3::IDENTITY,
@@ -196,6 +202,14 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             }
         }
     }
+    annotate_wyckoff_sites(
+        &cell,
+        &mut base_atoms,
+        &mut atoms,
+        &operations,
+        is_magnetic,
+        &mut warnings,
+    );
 
     let title = title_from_metadata(&scalars, &data_name)
         .unwrap_or_else(|| "Untitled structure".to_string());
@@ -425,6 +439,265 @@ fn magnetic_moments(
         ));
     }
     moments
+}
+
+fn anisotropic_displacements(
+    loops: &[LoopData],
+    warnings: &mut Vec<String>,
+) -> HashMap<String, [[f32; 3]; 3]> {
+    let Some(loop_data) = loops.iter().find(|loop_data| {
+        loop_data
+            .tags
+            .iter()
+            .any(|tag| tag == "_atom_site_aniso_label")
+    }) else {
+        return HashMap::new();
+    };
+    let index = |tag: &str| loop_data.tags.iter().position(|candidate| candidate == tag);
+    let Some(label_index) = index("_atom_site_aniso_label") else {
+        return HashMap::new();
+    };
+    let u_tags = [
+        "_atom_site_aniso_u_11",
+        "_atom_site_aniso_u_22",
+        "_atom_site_aniso_u_33",
+        "_atom_site_aniso_u_12",
+        "_atom_site_aniso_u_13",
+        "_atom_site_aniso_u_23",
+    ];
+    let b_tags = [
+        "_atom_site_aniso_b_11",
+        "_atom_site_aniso_b_22",
+        "_atom_site_aniso_b_33",
+        "_atom_site_aniso_b_12",
+        "_atom_site_aniso_b_13",
+        "_atom_site_aniso_b_23",
+    ];
+    let (indices, b_factor) = if let Some(indices) = u_tags
+        .iter()
+        .map(|tag| index(tag))
+        .collect::<Option<Vec<_>>>()
+    {
+        (indices, 1.0)
+    } else if let Some(indices) = b_tags
+        .iter()
+        .map(|tag| index(tag))
+        .collect::<Option<Vec<_>>>()
+    {
+        (indices, 1.0 / (8.0 * std::f32::consts::PI.powi(2)))
+    } else {
+        return HashMap::new();
+    };
+    let mut displacements = HashMap::new();
+    for row in loop_data.values.chunks(loop_data.tags.len()) {
+        let Some(label) = row.get(label_index).and_then(|value| clean_text(value)) else {
+            continue;
+        };
+        let Some(values) = indices
+            .iter()
+            .map(|&index| {
+                row.get(index)
+                    .and_then(|value| parse_number(value, "anisotropic U").ok())
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            warnings.push(format!(
+                "Ignored incomplete anisotropic displacement for site '{label}'."
+            ));
+            continue;
+        };
+        let values: Vec<_> = values.into_iter().map(|value| value * b_factor).collect();
+        displacements.insert(
+            label,
+            [
+                [values[0], values[3], values[4]],
+                [values[3], values[1], values[5]],
+                [values[4], values[5], values[2]],
+            ],
+        );
+    }
+    displacements
+}
+
+fn annotate_wyckoff_sites(
+    cell: &UnitCell,
+    asymmetric_atoms: &mut [AtomSite],
+    atoms: &mut [AtomSite],
+    operations: &[SymmetryOperation],
+    is_magnetic: bool,
+    warnings: &mut Vec<String>,
+) {
+    if atoms.is_empty() || atoms.len() > 20_000 {
+        return;
+    }
+    let lattice = [
+        [
+            cell.vectors[0].x as f64,
+            cell.vectors[1].x as f64,
+            cell.vectors[2].x as f64,
+        ],
+        [
+            cell.vectors[0].y as f64,
+            cell.vectors[1].y as f64,
+            cell.vectors[2].y as f64,
+        ],
+        [
+            cell.vectors[0].z as f64,
+            cell.vectors[1].z as f64,
+            cell.vectors[2].z as f64,
+        ],
+    ];
+    let mut type_ids = HashMap::new();
+    let types = atoms
+        .iter()
+        .map(|atom| {
+            let next = type_ids.len() as i32 + 1;
+            *type_ids.entry(atom.element.clone()).or_insert(next)
+        })
+        .collect();
+    let positions = atoms
+        .iter()
+        .map(|atom| {
+            [
+                atom.fractional.x as f64,
+                atom.fractional.y as f64,
+                atom.fractional.z as f64,
+            ]
+        })
+        .collect();
+    let Ok(crystal) = Crystal::new(lattice, positions, types) else {
+        return;
+    };
+    let Ok(dataset) = crystal.analyze().symprec(1.0e-4).dataset() else {
+        warnings.push("Could not determine Wyckoff positions for this CIF setting.".to_string());
+        return;
+    };
+    if dataset.wyckoffs.len() != atoms.len() || dataset.site_symmetry_symbols.len() != atoms.len() {
+        return;
+    }
+    let mut multiplicities = HashMap::new();
+    for orbit in &dataset.equivalent_atoms {
+        *multiplicities.entry(*orbit).or_insert(0_usize) += 1;
+    }
+    let mut by_site = HashMap::new();
+    for (index, atom) in atoms.iter_mut().enumerate() {
+        let multiplicity = multiplicities[&dataset.equivalent_atoms[index]];
+        let wyckoff = format!("{multiplicity}{}", dataset.wyckoffs[index].as_char());
+        let symmetry = dataset.site_symmetry_symbols[index].trim().to_string();
+        atom.wyckoff_position = Some(wyckoff.clone());
+        atom.site_symmetry = (!symmetry.is_empty()).then_some(symmetry.clone());
+        by_site.entry(atom.site_id).or_insert((wyckoff, symmetry));
+    }
+    for atom in asymmetric_atoms {
+        if let Some((wyckoff, symmetry)) = by_site.get(&atom.site_id) {
+            atom.wyckoff_position = Some(wyckoff.clone());
+            atom.site_symmetry = if is_magnetic {
+                magnetic_site_symmetry(atom.fractional, operations)
+                    .or_else(|| (!symmetry.is_empty()).then(|| symmetry.clone()))
+            } else {
+                (!symmetry.is_empty()).then(|| symmetry.clone())
+            };
+        }
+    }
+}
+
+/// Build the conventional dotted site-symmetry notation for orthorhombic-like
+/// magnetic stabilizers. The prime marks operations accompanied by time
+/// reversal. Other crystal systems retain the non-magnetic symbol determined
+/// by spglib rather than risking an incorrect prime placement.
+fn magnetic_site_symmetry(position: Vec3, operations: &[SymmetryOperation]) -> Option<String> {
+    let mut axis_symbols: [(Option<bool>, Option<bool>); 3] = [(None, None); 3];
+    let mut inversion = None;
+    let mut has_non_diagonal = false;
+    for operation in operations {
+        if periodic_distance(operation.apply(position), wrap01(position)) > 1.0e-4 {
+            continue;
+        }
+        let matrix = operation.matrix;
+        let rows = [
+            [matrix.x_axis.x, matrix.y_axis.x, matrix.z_axis.x],
+            [matrix.x_axis.y, matrix.y_axis.y, matrix.z_axis.y],
+            [matrix.x_axis.z, matrix.y_axis.z, matrix.z_axis.z],
+        ];
+        if rows.iter().enumerate().any(|(row, values)| {
+            values
+                .iter()
+                .enumerate()
+                .any(|(column, value)| row != column && value.abs() > 1.0e-4)
+        }) {
+            has_non_diagonal = true;
+            continue;
+        }
+        let diagonal = [rows[0][0], rows[1][1], rows[2][2]];
+        if diagonal.iter().all(|value| (*value + 1.0).abs() < 1.0e-4) {
+            inversion = Some(operation.time_reversal < 0.0);
+            continue;
+        }
+        let negatives = diagonal.iter().filter(|value| **value < 0.0).count();
+        match negatives {
+            1 => {
+                let axis = diagonal
+                    .iter()
+                    .position(|value| *value < 0.0)
+                    .expect("one negative diagonal exists");
+                axis_symbols[axis].1 = Some(operation.time_reversal < 0.0);
+            }
+            2 => {
+                let axis = diagonal
+                    .iter()
+                    .position(|value| *value > 0.0)
+                    .expect("one positive diagonal exists");
+                axis_symbols[axis].0 = Some(operation.time_reversal < 0.0);
+            }
+            _ => {}
+        }
+    }
+    if has_non_diagonal {
+        return None;
+    }
+    if let Some(time_reversed) = inversion {
+        return Some(if time_reversed {
+            "-1'".to_string()
+        } else {
+            "-1".to_string()
+        });
+    }
+    if axis_symbols
+        .iter()
+        .all(|(two, mirror)| two.is_none() && mirror.is_none())
+    {
+        return Some("1".to_string());
+    }
+    let mut output = String::new();
+    for (two, mirror) in axis_symbols {
+        match (two, mirror) {
+            (Some(two_prime), Some(mirror_prime)) => {
+                output.push('2');
+                if two_prime {
+                    output.push('\'');
+                }
+                output.push('/');
+                output.push('m');
+                if mirror_prime {
+                    output.push('\'');
+                }
+            }
+            (Some(two_prime), None) => {
+                output.push('2');
+                if two_prime {
+                    output.push('\'');
+                }
+            }
+            (None, Some(mirror_prime)) => {
+                output.push('m');
+                if mirror_prime {
+                    output.push('\'');
+                }
+            }
+            (None, None) => output.push('.'),
+        }
+    }
+    Some(output)
 }
 
 fn all_present(indices: (Option<usize>, Option<usize>, Option<usize>)) -> bool {
@@ -1379,6 +1652,24 @@ Y1 Y 0 0 0
         assert_eq!(
             metadata.transformation_from_standard.as_deref(),
             Some("c,a,b;3/4,0,3/4")
+        );
+    }
+
+    #[test]
+    fn formats_primed_magnetic_site_symmetry() {
+        let operation = |diagonal: Vec3, time_reversal| SymmetryOperation {
+            matrix: Mat3::from_diagonal(diagonal),
+            translation: Vec3::ZERO,
+            time_reversal,
+        };
+        let operations = [
+            operation(Vec3::ONE, 1.0),
+            operation(Vec3::new(-1.0, -1.0, 1.0), 1.0),
+            operation(Vec3::new(1.0, 1.0, -1.0), -1.0),
+        ];
+        assert_eq!(
+            magnetic_site_symmetry(Vec3::ZERO, &operations).as_deref(),
+            Some("..2/m'")
         );
     }
 }

@@ -855,7 +855,10 @@ fn ui_structure_tab(
                     .striped(true)
                     .spacing([9.0, 5.0])
                     .show(ui, |ui| {
-                        for heading in ["No.", "Element", "Label", "x", "y", "z", "Occ.", "Uiso"] {
+                        for heading in [
+                            "No.", "Element", "Label", "x", "y", "z", "Occ.", "Uiso", "Site",
+                            "Sym.",
+                        ] {
                             ui.label(
                                 egui::RichText::new(heading)
                                     .size(11.0)
@@ -875,6 +878,12 @@ fn ui_structure_tab(
                                 format!("{:.3}", atom.occupancy),
                                 atom.u_iso
                                     .map_or_else(|| "—".to_string(), |value| format!("{value:.3}")),
+                                atom.wyckoff_position
+                                    .clone()
+                                    .unwrap_or_else(|| "—".to_string()),
+                                atom.site_symmetry
+                                    .clone()
+                                    .unwrap_or_else(|| "—".to_string()),
                             ] {
                                 ui.label(egui::RichText::new(value).size(11.0).color(TEXT_PRIMARY));
                             }
@@ -1919,6 +1928,25 @@ fn ui_view_tab(
             dirty.mark(false);
         }
         if labeled_slider(ui, "Reflectance", &mut settings.atom_reflectance, 0.0..=1.0) {
+            dirty.mark(false);
+        }
+        if ui
+            .checkbox(
+                &mut settings.show_thermal_ellipsoids,
+                "Thermal ellipsoids (Uij)",
+            )
+            .changed()
+        {
+            dirty.mark(false);
+        }
+        if settings.show_thermal_ellipsoids
+            && labeled_slider(
+                ui,
+                "Ellipsoid scale",
+                &mut settings.thermal_ellipsoid_scale,
+                0.5..=5.0,
+            )
+        {
             dirty.mark(false);
         }
         ui.horizontal(|ui| {

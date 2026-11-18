@@ -102,6 +102,9 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
                 symmetry_rotation: Mat3::IDENTITY,
                 symmetry_time_reversal: 1.0,
                 u_iso: None,
+                anisotropic_u: None,
+                wyckoff_position: None,
+                site_symmetry: None,
                 magnetic_moment: None,
             };
             atoms.push(atom);

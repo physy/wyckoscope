@@ -19,6 +19,11 @@ pub struct AtomSite {
     /// Equivalent isotropic displacement parameter, when supplied by the
     /// source file. It is reported in Å² by CIF and mCIF conventions.
     pub u_iso: Option<f32>,
+    /// Symmetric anisotropic displacement tensor in fractional lattice basis,
+    /// in Å², parsed from CIF `_atom_site_aniso_U_ij` values.
+    pub anisotropic_u: Option<[[f32; 3]; 3]>,
+    pub wyckoff_position: Option<String>,
+    pub site_symmetry: Option<String>,
     /// CIF disorder metadata, retained even though the initial sector view
     /// groups components by their rendered crystallographic position.
     pub disorder_assembly: Option<String>,

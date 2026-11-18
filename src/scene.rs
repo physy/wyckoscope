@@ -594,6 +594,34 @@ pub(crate) fn rebuild_scene(
             &selection,
         );
     }
+    if settings.show_thermal_ellipsoids {
+        let mut ellipsoid_materials = HashMap::new();
+        for &index in &visible_indices {
+            let atom = &render_atoms[index];
+            let Some(displacement) = atom.anisotropic_u else {
+                continue;
+            };
+            let style = resolved_style(&atom.element, &overrides);
+            let material = ellipsoid_materials
+                .entry(atom.element.clone())
+                .or_insert_with(|| thermal_ellipsoid_material(&mut materials, style, &settings))
+                .clone();
+            if let Some(transform) = thermal_ellipsoid_transform(
+                &structure.cell,
+                displacement,
+                atom.position,
+                settings.thermal_ellipsoid_scale,
+            ) {
+                commands.spawn((
+                    Name::new(format!("{} {} thermal ellipsoid", atom.element, atom.label)),
+                    Mesh3d(sphere_mesh.clone()),
+                    MeshMaterial3d(material),
+                    transform,
+                    CrystalVisual,
+                ));
+            }
+        }
+    }
     if settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
         for &(a, b) in &bonds {
             let first = &render_atoms[a];
@@ -1597,6 +1625,7 @@ fn make_render_atom(
         symmetry_rotation: atom.symmetry_rotation,
         symmetry_time_reversal: atom.symmetry_time_reversal,
         occupancy: atom.occupancy,
+        anisotropic_u: atom.anisotropic_u,
     }
 }
 
@@ -1824,6 +1853,127 @@ fn create_atom_material(
         reflectance: settings.atom_reflectance,
         ..default()
     })
+}
+
+fn thermal_ellipsoid_material(
+    materials: &mut Assets<StandardMaterial>,
+    style: ElementStyle,
+    settings: &VisualSettings,
+) -> Handle<StandardMaterial> {
+    let color = style.color.to_srgba();
+    materials.add(StandardMaterial {
+        base_color: Color::srgba(color.red, color.green, color.blue, 0.46),
+        metallic: settings.atom_metallic * 0.25,
+        perceptual_roughness: settings.atom_roughness,
+        reflectance: settings.atom_reflectance,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    })
+}
+
+fn thermal_ellipsoid_transform(
+    cell: &UnitCell,
+    displacement: [[f32; 3]; 3],
+    position: Vec3,
+    scale: f32,
+) -> Option<Transform> {
+    let fractional_u = Mat3::from_cols_array(&[
+        displacement[0][0],
+        displacement[1][0],
+        displacement[2][0],
+        displacement[0][1],
+        displacement[1][1],
+        displacement[2][1],
+        displacement[0][2],
+        displacement[1][2],
+        displacement[2][2],
+    ]);
+    let basis = Mat3::from_cols(cell.vectors[0], cell.vectors[1], cell.vectors[2]);
+    let crystal_u = basis * fractional_u * basis.transpose();
+    let world_rotation = Mat3::from_cols(
+        crystal_to_world(Vec3::X),
+        crystal_to_world(Vec3::Y),
+        crystal_to_world(Vec3::Z),
+    );
+    let world_u = world_rotation * crystal_u * world_rotation.transpose();
+    let (values, mut axes) = symmetric_eigen_decomposition(world_u);
+    if values.max_element() <= 1.0e-8 {
+        return None;
+    }
+    if axes.determinant() < 0.0 {
+        axes.z_axis = -axes.z_axis;
+    }
+    Some(Transform {
+        translation: position,
+        rotation: Quat::from_mat3(&axes),
+        scale: Vec3::new(
+            values.x.max(0.0).sqrt() * scale,
+            values.y.max(0.0).sqrt() * scale,
+            values.z.max(0.0).sqrt() * scale,
+        ),
+    })
+}
+
+/// Jacobi diagonalization for a real symmetric 3×3 displacement tensor.
+fn symmetric_eigen_decomposition(matrix: Mat3) -> (Vec3, Mat3) {
+    let mut values: [[f32; 3]; 3] = [
+        [matrix.x_axis.x, matrix.y_axis.x, matrix.z_axis.x],
+        [matrix.x_axis.y, matrix.y_axis.y, matrix.z_axis.y],
+        [matrix.x_axis.z, matrix.y_axis.z, matrix.z_axis.z],
+    ];
+    let mut vectors = [[0.0; 3]; 3];
+    for (index, row) in vectors.iter_mut().enumerate() {
+        row[index] = 1.0;
+    }
+    for _ in 0..16 {
+        let ((first, second), magnitude) = [
+            ((0, 1), values[0][1].abs()),
+            ((0, 2), values[0][2].abs()),
+            ((1, 2), values[1][2].abs()),
+        ]
+        .into_iter()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("Jacobi candidates are non-empty");
+        if magnitude < 1.0e-7 {
+            break;
+        }
+        let angle = 0.5
+            * (2.0 * values[first][second]).atan2(values[second][second] - values[first][first]);
+        let (sin, cos) = angle.sin_cos();
+        for index in 0..3 {
+            if index == first || index == second {
+                continue;
+            }
+            let left = values[index][first];
+            let right = values[index][second];
+            values[index][first] = cos * left - sin * right;
+            values[first][index] = values[index][first];
+            values[index][second] = sin * left + cos * right;
+            values[second][index] = values[index][second];
+        }
+        let left = values[first][first];
+        let right = values[second][second];
+        let cross = values[first][second];
+        values[first][first] = cos * cos * left - 2.0 * sin * cos * cross + sin * sin * right;
+        values[second][second] = sin * sin * left + 2.0 * sin * cos * cross + cos * cos * right;
+        values[first][second] = 0.0;
+        values[second][first] = 0.0;
+        for row in &mut vectors {
+            let left = row[first];
+            let right = row[second];
+            row[first] = cos * left - sin * right;
+            row[second] = sin * left + cos * right;
+        }
+    }
+    (
+        Vec3::new(values[0][0], values[1][1], values[2][2]),
+        Mat3::from_cols(
+            Vec3::new(vectors[0][0], vectors[1][0], vectors[2][0]),
+            Vec3::new(vectors[0][1], vectors[1][1], vectors[2][1]),
+            Vec3::new(vectors[0][2], vectors[1][2], vectors[2][2]),
+        ),
+    )
 }
 
 fn spawn_cylinder_between(
@@ -2160,6 +2310,7 @@ mod tests {
             symmetry_rotation: Mat3::IDENTITY,
             symmetry_time_reversal: -1.0,
             occupancy: 1.0,
+            anisotropic_u: None,
         };
         let mut vector = VectorLayer {
             enabled: true,
@@ -2203,6 +2354,7 @@ mod tests {
             symmetry_rotation: Mat3::IDENTITY,
             symmetry_time_reversal: 1.0,
             occupancy: 1.0,
+            anisotropic_u: None,
         };
         assert!(vector_matches_atom(&target, &atom));
 

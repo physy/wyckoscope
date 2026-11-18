@@ -353,6 +353,12 @@ struct AtomFile {
     #[serde(default)]
     u_iso: Option<f32>,
     #[serde(default)]
+    anisotropic_u: Option<[[f32; 3]; 3]>,
+    #[serde(default)]
+    wyckoff_position: Option<String>,
+    #[serde(default)]
+    site_symmetry: Option<String>,
+    #[serde(default)]
     disorder_assembly: Option<String>,
     #[serde(default)]
     disorder_group: Option<String>,
@@ -474,6 +480,9 @@ impl From<AtomSite> for AtomFile {
             fractional_as_written: Some(atom.fractional_as_written.to_array()),
             occupancy: atom.occupancy,
             u_iso: atom.u_iso,
+            anisotropic_u: atom.anisotropic_u,
+            wyckoff_position: atom.wyckoff_position,
+            site_symmetry: atom.site_symmetry,
             disorder_assembly: atom.disorder_assembly,
             disorder_group: atom.disorder_group,
             symmetry_rotation: atom.symmetry_rotation.to_cols_array(),
@@ -500,6 +509,9 @@ impl AtomFile {
             ),
             occupancy: self.occupancy,
             u_iso: self.u_iso,
+            anisotropic_u: self.anisotropic_u,
+            wyckoff_position: self.wyckoff_position,
+            site_symmetry: self.site_symmetry,
             disorder_assembly: self.disorder_assembly,
             disorder_group: self.disorder_group,
             symmetry_rotation: Mat3::from_cols_array(&self.symmetry_rotation),

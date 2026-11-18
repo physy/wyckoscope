@@ -710,6 +710,8 @@ pub(crate) struct VisualSettings {
     pub(crate) atom_metallic: f32,
     pub(crate) atom_roughness: f32,
     pub(crate) atom_reflectance: f32,
+    pub(crate) show_thermal_ellipsoids: bool,
+    pub(crate) thermal_ellipsoid_scale: f32,
     pub(crate) scene_objects: SceneObjects,
     pub(crate) bond_radius: f32,
     pub(crate) bond_match_mode: BondMatchMode,
@@ -752,6 +754,8 @@ impl Default for VisualSettings {
             atom_metallic: 0.52,
             atom_roughness: 0.29,
             atom_reflectance: 0.53,
+            show_thermal_ellipsoids: false,
+            thermal_ellipsoid_scale: 2.45,
             scene_objects: SceneObjects::default(),
             bond_radius: 0.095,
             bond_match_mode: BondMatchMode::Element,
@@ -965,6 +969,7 @@ pub(crate) struct RenderAtom {
     pub(crate) symmetry_rotation: Mat3,
     pub(crate) symmetry_time_reversal: f32,
     pub(crate) occupancy: f32,
+    pub(crate) anisotropic_u: Option<[[f32; 3]; 3]>,
 }
 
 impl SelectedAtom {
