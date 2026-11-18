@@ -5,6 +5,7 @@ mod lighting;
 mod project;
 mod scene;
 mod state;
+mod transport;
 mod ui;
 
 use bevy::{

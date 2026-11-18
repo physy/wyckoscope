@@ -115,11 +115,23 @@ pub struct CrystalStructure {
     /// separate from the parsed operations so the report can faithfully show
     /// the setting supplied by a CIF or mCIF file.
     pub symmetry_metadata: SymmetryMetadata,
+    /// Full point parts of the source symmetry operations, including the
+    /// magnetic time-reversal flag. Keep these independently of atom
+    /// expansion: special positions can otherwise hide valid operations.
+    pub magnetic_operations: Vec<MagneticOperation>,
     pub symmetry_operation_count: usize,
     pub source_format: SourceFormat,
     pub warnings: Vec<String>,
     /// Non-structural settings imported from a source format such as VESTA.
     pub imported_visuals: ImportedVisuals,
+}
+
+#[derive(Debug, Clone)]
+pub struct MagneticOperation {
+    /// Rotation in fractional lattice coordinates.
+    pub rotation: Mat3,
+    /// `true` when the operation is combined with time reversal.
+    pub time_reversal: bool,
 }
 
 #[derive(Debug, Clone, Default)]

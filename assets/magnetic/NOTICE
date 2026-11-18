@@ -1,0 +1,8 @@
+`msg_to_mpg.tsv` is copied from:
+https://github.com/KaitoShimonaka/nolhallsym/blob/main/src/nolhallsym/assets/table_for_MSG_MPG.txt
+
+It maps all 1651 BNS magnetic-space-group numbers to UNI magnetic-point-group
+symbols. The source repository is licensed under the MIT License:
+Copyright (c) 2026 Kaito Shimonaka.
+
+Retrieved for Wyckoscope on 2026-11-19.

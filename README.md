@@ -11,6 +11,7 @@ Wyckoscope opens CIF, mCIF, and VESTA files and provides an interactive 3D view 
 - PBR atom rendering, configurable lighting, backgrounds, and projection
 - Bonds, coordination polyhedra, vectors, supercells, and unit cells
 - Structure report with crystallographic and magnetic space-group metadata
+- Magnetic point-group summary and symmetry-allowed nonlinear conductivity components for Drude, BCD, inter-QMD, and intra-QMD mechanisms
 - High-resolution PNG export
 - Project save/load and undo/redo
 

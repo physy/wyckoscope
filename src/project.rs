@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use wyckoscope::model::{
     AtomSite, CrystalStructure, ImportedBondBoundaryMode, ImportedBondRule, ImportedBondSearchMode,
-    ImportedBondStyle, ImportedVector, ImportedVisuals, SymmetryMetadata, UnitCell,
+    ImportedBondStyle, ImportedVector, ImportedVisuals, MagneticOperation, SymmetryMetadata,
+    UnitCell,
 };
 
 use crate::{
@@ -325,6 +326,8 @@ struct StructureFile {
     space_group: Option<String>,
     #[serde(default)]
     symmetry_metadata: SymmetryMetadataFile,
+    #[serde(default)]
+    magnetic_operations: Vec<MagneticOperationFile>,
     symmetry_operation_count: usize,
     source_format: wyckoscope::model::SourceFormat,
     warnings: Vec<String>,
@@ -380,6 +383,12 @@ struct SymmetryMetadataFile {
     transformation_from_standard: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct MagneticOperationFile {
+    rotation: [f32; 9],
+    time_reversal: bool,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct ImportedVisualsFile {
     background: Option<[u8; 3]>,
@@ -433,6 +442,14 @@ impl From<CrystalStructure> for StructureFile {
             atoms: structure.atoms.into_iter().map(AtomFile::from).collect(),
             space_group: structure.space_group,
             symmetry_metadata: SymmetryMetadataFile::from(structure.symmetry_metadata),
+            magnetic_operations: structure
+                .magnetic_operations
+                .into_iter()
+                .map(|operation| MagneticOperationFile {
+                    rotation: operation.rotation.to_cols_array(),
+                    time_reversal: operation.time_reversal,
+                })
+                .collect(),
             symmetry_operation_count: structure.symmetry_operation_count,
             source_format: structure.source_format,
             warnings: structure.warnings,
@@ -469,6 +486,14 @@ impl StructureFile {
                 .collect::<Result<_, _>>()?,
             space_group: self.space_group,
             symmetry_metadata: self.symmetry_metadata.into(),
+            magnetic_operations: self
+                .magnetic_operations
+                .into_iter()
+                .map(|operation| MagneticOperation {
+                    rotation: Mat3::from_cols_array(&operation.rotation),
+                    time_reversal: operation.time_reversal,
+                })
+                .collect(),
             symmetry_operation_count: self.symmetry_operation_count,
             source_format: self.source_format,
             warnings: self.warnings,
@@ -679,6 +704,10 @@ mod tests {
         );
         assert_eq!(restored.camera.target, Vec3::new(1.0, 2.0, 3.0).to_array());
         assert_eq!(restored.camera.radius, document.camera.radius);
+        assert_eq!(
+            restored.structure.magnetic_operations.len(),
+            document.structure.magnetic_operations.len()
+        );
         assert!(matches!(
             restored.visual_settings.vectors.layers[0].target,
             VectorTarget::Site { site_id } if site_id == vector_site_id

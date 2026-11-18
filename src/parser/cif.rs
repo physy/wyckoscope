@@ -6,7 +6,10 @@ use cryspglib::spg_database::{SPACEGROUP_TYPES, get_spacegroup_operations};
 
 use crate::{
     elements::normalize_symbol,
-    model::{AtomSite, CrystalStructure, SiteId, SourceFormat, SymmetryMetadata, UnitCell},
+    model::{
+        AtomSite, CrystalStructure, MagneticOperation, SiteId, SourceFormat, SymmetryMetadata,
+        UnitCell,
+    },
 };
 
 use super::{ParseError, StructureCandidate, parse_number};
@@ -221,6 +224,13 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
         atoms,
         space_group,
         symmetry_metadata,
+        magnetic_operations: operations
+            .iter()
+            .map(|operation| MagneticOperation {
+                rotation: operation.matrix,
+                time_reversal: operation.time_reversal < 0.0,
+            })
+            .collect(),
         symmetry_operation_count: operations.len(),
         source_format: if is_magnetic {
             SourceFormat::Mcif

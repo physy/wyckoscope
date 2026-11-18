@@ -4,8 +4,8 @@ use crate::{
     elements::normalize_symbol,
     model::{
         AtomSite, CrystalStructure, ImportedBondBoundaryMode, ImportedBondRule,
-        ImportedBondSearchMode, ImportedBondStyle, ImportedVector, ImportedVisuals, SiteId,
-        SourceFormat, SymmetryMetadata, UnitCell,
+        ImportedBondSearchMode, ImportedBondStyle, ImportedVector, ImportedVisuals,
+        MagneticOperation, SiteId, SourceFormat, SymmetryMetadata, UnitCell,
     },
 };
 
@@ -122,6 +122,9 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
     let asymmetric_atoms = atoms;
     let symmetry_operations = vesta_symmetry_operations(&lines);
     let atoms = expand_vesta_symmetry(&asymmetric_atoms, &symmetry_operations);
+    let is_magnetic = lines
+        .iter()
+        .any(|line| line.eq_ignore_ascii_case("MAGNETIC_CRYSTAL"));
     let imported_visuals = parse_imported_visuals(&lines, &asymmetric_atoms);
     let mut warnings = Vec::new();
     if symmetry_operations.len() > 1 {
@@ -153,12 +156,35 @@ pub fn parse(text: &str) -> Result<CrystalStructure, ParseError> {
         asymmetric_atoms,
         atoms,
         space_group: value_after_section(&lines, "GROUP").map(str::to_string),
-        symmetry_metadata: SymmetryMetadata::default(),
+        symmetry_metadata: vesta_symmetry_metadata(&lines, is_magnetic),
+        magnetic_operations: symmetry_operations
+            .iter()
+            .map(|operation| MagneticOperation {
+                rotation: operation.matrix,
+                time_reversal: operation.time_reversal < 0.0,
+            })
+            .collect(),
         symmetry_operation_count: symmetry_operations.len(),
         source_format: SourceFormat::Vesta,
         warnings,
         imported_visuals,
     })
+}
+
+fn vesta_symmetry_metadata(lines: &[&str], is_magnetic: bool) -> SymmetryMetadata {
+    let group = section_lines(lines, "GROUP")
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let values: Vec<_> = group.split_whitespace().collect();
+    if is_magnetic && values.len() >= 3 {
+        return SymmetryMetadata {
+            magnetic_space_group_number_bns: Some(format!("{}.{}", values[0], values[1])),
+            magnetic_space_group_name_bns: Some(values[2..].join(" ")),
+            ..SymmetryMetadata::default()
+        };
+    }
+    SymmetryMetadata::default()
 }
 
 fn find_section(lines: &[&str], name: &str) -> Option<usize> {
@@ -194,6 +220,7 @@ fn section_lines<'a>(lines: &'a [&'a str], name: &str) -> Vec<&'a str> {
 struct VestaSymmetryOperation {
     matrix: Mat3,
     translation: Vec3,
+    time_reversal: f32,
 }
 
 fn vesta_symmetry_operations(lines: &[&str]) -> Vec<VestaSymmetryOperation> {
@@ -212,12 +239,14 @@ fn vesta_symmetry_operations(lines: &[&str]) -> Vec<VestaSymmetryOperation> {
             matrix: Mat3::from_cols_array(&[
                 rows[0], rows[3], rows[6], rows[1], rows[4], rows[7], rows[2], rows[5], rows[8],
             ]),
+            time_reversal: values.get(12).copied().unwrap_or(1.0),
         });
     }
     if operations.is_empty() {
         operations.push(VestaSymmetryOperation {
             matrix: Mat3::IDENTITY,
             translation: Vec3::ZERO,
+            time_reversal: 1.0,
         });
     }
     operations
@@ -240,6 +269,7 @@ fn expand_vesta_symmetry(
             let mut expanded = atom.clone();
             expanded.fractional = fractional;
             expanded.symmetry_rotation = operation.matrix;
+            expanded.symmetry_time_reversal = operation.time_reversal;
             atoms.push(expanded);
         }
     }
@@ -559,5 +589,51 @@ VECTS 0.4
         assert_eq!(vector.color, [255, 0, 0]);
         assert!((vector.components.z - 2.0).abs() < 1.0e-5);
         assert!((vector.scale - 0.4).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn preserves_magnetic_vesta_operations_and_bns_metadata() {
+        let text = r#"
+#VESTA_FORMAT_VERSION 3.5.0
+MAGNETIC_CRYSTAL
+TITLE
+Magnetic demo
+GROUP
+52 318 P_Bnna
+CELLP
+5.0 5.0 5.0 90.0 90.0 90.0
+0 0 0 0 0 0
+STRUC
+1 Fe Fe1 1.0 0.1 0.2 0.3 1a 1
+0.0 0.0 0.0 0.0
+0 0 0 0 0 0 0
+SYMOP
+0 0 0 1 0 0 0 1 0 0 0 1 1
+0 0 0 1 0 0 0 1 0 0 0 1 -1
+-1 -1 -1 0 0 0 0 0 0 0 0 0
+STYLE
+"#;
+        let structure = parse(text).unwrap();
+        assert_eq!(
+            structure
+                .symmetry_metadata
+                .magnetic_space_group_number_bns
+                .as_deref(),
+            Some("52.318")
+        );
+        assert_eq!(
+            structure
+                .symmetry_metadata
+                .magnetic_space_group_name_bns
+                .as_deref(),
+            Some("P_Bnna")
+        );
+        assert_eq!(structure.magnetic_operations.len(), 2);
+        assert!(
+            structure
+                .magnetic_operations
+                .iter()
+                .any(|operation| operation.time_reversal)
+        );
     }
 }

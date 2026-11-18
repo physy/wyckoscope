@@ -17,6 +17,7 @@ use crate::{
         scene_object_position, view_directions,
     },
     state::*,
+    transport::{TransportAnalysis, analyze as analyze_transport, component_label},
 };
 
 /// Semantic UI colours. Keep presentation colours here instead of scattering
@@ -733,6 +734,7 @@ fn ui_structure_tab(
     selection: &mut SelectionState,
     dirty: &mut SceneDirty,
 ) {
+    let transport = analyze_transport(&state.structure);
     section(ui, "STRUCTURE", |ui| {
         ui.label(
             egui::RichText::new(&state.structure.title)
@@ -817,11 +819,32 @@ fn ui_structure_tab(
                     if let Some(setting) = &metadata.setting {
                         stat(ui, "Setting", setting.clone());
                     }
+                    if let Some(name) = &metadata.magnetic_space_group_name_bns {
+                        stat(ui, "Magnetic space group (BNS)", name.clone());
+                        stat(
+                            ui,
+                            "Magnetic space group number (BNS)",
+                            metadata
+                                .magnetic_space_group_number_bns
+                                .clone()
+                                .unwrap_or_else(|| "not specified".to_string()),
+                        );
+                    }
                 }
+                stat(
+                    ui,
+                    "Magnetic point group",
+                    transport.magnetic_point_group.clone(),
+                );
                 stat(
                     ui,
                     "Operations",
                     state.structure.symmetry_operation_count.to_string(),
+                );
+                stat(
+                    ui,
+                    "Magnetic point operations",
+                    transport.operation_count.to_string(),
                 );
                 stat(
                     ui,
@@ -848,6 +871,7 @@ fn ui_structure_tab(
                 );
             });
     });
+    ui_supercell_section(ui, state, settings, overrides, status, dirty);
     section(ui, "ASYMMETRIC SITES", |ui| {
         egui::ScrollArea::both()
             .max_height(260.0)
@@ -905,6 +929,25 @@ fn ui_structure_tab(
             dirty.mark(true);
         }
     });
+    ui_transport_analysis(ui, &transport);
+    ui_selection_controls(ui, selection, dirty);
+    if !state.structure.warnings.is_empty() {
+        section(ui, "IMPORT NOTES", |ui| {
+            for warning in &state.structure.warnings {
+                ui.label(egui::RichText::new(warning).size(11.0).color(WARNING));
+            }
+        });
+    }
+}
+
+fn ui_supercell_section(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    settings: &mut VisualSettings,
+    overrides: &ElementOverrides,
+    status: &SceneStatus,
+    dirty: &mut SceneDirty,
+) {
     section(ui, "SUPERCELL", |ui| {
         ui.horizontal(|ui| {
             for (axis, value) in ["A", "B", "C"].into_iter().zip(&mut settings.supercell) {
@@ -960,14 +1003,6 @@ fn ui_structure_tab(
             ui.colored_label(WARNING, warning);
         }
     });
-    ui_selection_controls(ui, selection, dirty);
-    if !state.structure.warnings.is_empty() {
-        section(ui, "IMPORT NOTES", |ui| {
-            for warning in &state.structure.warnings {
-                ui.label(egui::RichText::new(warning).size(11.0).color(WARNING));
-            }
-        });
-    }
 }
 
 fn ui_selection_controls(
@@ -1784,6 +1819,108 @@ fn ui_bonds_tab(
             }
         }
     });
+}
+
+fn ui_transport_analysis(ui: &mut egui::Ui, analysis: &TransportAnalysis) {
+    ui.add_space(10.0);
+    egui::Frame::NONE
+        .fill(CARD_BACKGROUND)
+        .stroke(egui::Stroke::new(1.0, CARD_STROKE))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            egui::CollapsingHeader::new(
+                egui::RichText::new("CONDUCTIVITY TENSORS")
+                    .size(12.0)
+                    .strong()
+                    .color(TEXT_PRIMARY),
+            )
+            .id_salt("conductivity_tensors")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Each cell is written in independent symmetry-allowed parameters. 0 means symmetry-forbidden.",
+                    )
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "This is a symmetry-only result; it does not establish a nonzero measured response.",
+                    )
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Linear conductivity σ_ij")
+                        .strong()
+                        .color(ACCENT),
+                );
+                egui::Grid::new("linear_conductivity_tensor")
+                    .num_columns(4)
+                    .spacing([10.0, 5.0])
+                    .show(ui, |ui| {
+                        ui.label("");
+                        for axis in ["x", "y", "z"] {
+                            ui.label(egui::RichText::new(axis).strong());
+                        }
+                        ui.end_row();
+                        for (row, axis) in ["x", "y", "z"].iter().enumerate() {
+                            ui.label(egui::RichText::new(*axis).strong());
+                            for column in 0..3 {
+                                let index = row * 3 + column;
+                                let expression = &analysis.linear.expressions[index];
+                                let color = if expression == "0" { TEXT_SECONDARY } else { ACCENT };
+                                ui.label(egui::RichText::new(expression).size(12.0).color(color))
+                                    .on_hover_text(format!("σ_{}{}", axis, ["x", "y", "z"][column]));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(13.0);
+                ui.label(
+                    egui::RichText::new("Second-order conductivity σ_i;jk")
+                        .strong()
+                        .color(ACCENT),
+                );
+                for mechanism in &analysis.mechanisms {
+            ui.label(
+                egui::RichText::new(mechanism.mechanism.label())
+                    .strong()
+            );
+            egui::Grid::new(egui::Id::new(("transport_tensor", mechanism.mechanism)))
+                .num_columns(7)
+                .spacing([7.0, 5.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    for suffix in ["xx", "yy", "zz", "yz", "zx", "xy"] {
+                        ui.label(egui::RichText::new(suffix).strong());
+                    }
+                    ui.end_row();
+                    for (output, axis) in ["x", "y", "z"].iter().enumerate() {
+                        ui.label(egui::RichText::new(*axis).strong());
+                        for pair in [0, 3, 5, 4, 2, 1] {
+                            let index = output * 6 + pair;
+                            let expression = &mechanism.expressions[index];
+                            let color = if expression == "0" {
+                                TEXT_SECONDARY
+                            } else {
+                                ACCENT
+                            };
+                            ui.label(egui::RichText::new(expression).size(12.0).color(color))
+                                .on_hover_text(component_label(index));
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(8.0);
+                }
+            });
+        });
 }
 
 fn ui_view_tab(
