@@ -902,18 +902,13 @@ fn spawn_scene_objects(
             object.rotation[1].to_radians(),
             object.rotation[2].to_radians(),
         );
-        let color = Color::srgba_u8(
-            object.color[0],
-            object.color[1],
-            object.color[2],
-            (object.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
-        );
+        let color = Color::srgb_u8(object.color[0], object.color[1], object.color[2]);
         let mut material = |metallic: f32, roughness: f32| {
             materials.add(StandardMaterial {
                 base_color: color,
                 metallic,
                 perceptual_roughness: roughness,
-                alpha_mode: AlphaMode::Blend,
+                alpha_mode: AlphaMode::Opaque,
                 double_sided: true,
                 cull_mode: None,
                 ..default()

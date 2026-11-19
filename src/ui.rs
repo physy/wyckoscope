@@ -513,12 +513,7 @@ fn draw_scene_object_labels(
         if screen.x < panel_width || !content.contains(screen) {
             continue;
         }
-        let text_color = egui::Color32::from_rgba_unmultiplied(
-            object.color[0],
-            object.color[1],
-            object.color[2],
-            (object.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
-        );
+        let text_color = egui::Color32::from_rgb(object.color[0], object.color[1], object.color[2]);
         let fill = show_background.then(|| {
             egui::Color32::from_rgba_unmultiplied(
                 background_color[0],
@@ -1398,7 +1393,6 @@ fn ui_objects_tab(
                         ui.label("Color");
                         changed |= ui.color_edit_button_srgb(&mut object.color).changed();
                     });
-                    changed |= labeled_slider(ui, "Opacity", &mut object.opacity, 0.05..=1.0);
                     match &mut object.kind {
                         SceneObjectKind::Ground { size, metallic, roughness } => {
                             changed |= labeled_slider(ui, "Size", size, 1.0..=200.0);

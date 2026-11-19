@@ -213,7 +213,6 @@ pub(crate) struct SceneObject {
     pub(crate) position: [f32; 3],
     pub(crate) rotation: [f32; 3],
     pub(crate) color: [u8; 3],
-    pub(crate) opacity: f32,
     pub(crate) kind: SceneObjectKind,
 }
 
@@ -239,7 +238,6 @@ impl SceneObjects {
             position: [0.0; 3],
             rotation: [0.0; 3],
             color: [20, 20, 20],
-            opacity: 1.0,
             kind,
         });
         self.selected = Some(id);
