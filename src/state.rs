@@ -697,24 +697,20 @@ impl Default for LightingSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum AxisLabelFont {
-    SansSerif,
-    Monospace,
+/// Whether an overlay label is rendered in black or in the colour associated
+/// with the object it annotates (an axis or an element).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) enum OverlayLabelColor {
+    #[default]
+    Black,
+    Matching,
 }
 
-impl AxisLabelFont {
+impl OverlayLabelColor {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::SansSerif => "Sans serif",
-            Self::Monospace => "Monospace",
-        }
-    }
-
-    pub(crate) fn family(self) -> egui::FontFamily {
-        match self {
-            Self::SansSerif => egui::FontFamily::Proportional,
-            Self::Monospace => egui::FontFamily::Monospace,
+            Self::Black => "Black",
+            Self::Matching => "Matching color",
         }
     }
 }
@@ -782,9 +778,11 @@ pub(crate) struct VisualSettings {
     pub(crate) background: [u8; 3],
     pub(crate) axis_colors: [[u8; 3]; 3],
     pub(crate) axis_label_size: f32,
-    pub(crate) axis_label_font: AxisLabelFont,
+    pub(crate) axis_label_color: OverlayLabelColor,
+    pub(crate) axis_label_bold: bool,
     pub(crate) show_element_legend: bool,
-    pub(crate) element_legend_text_color: [u8; 3],
+    pub(crate) element_legend_label_color: OverlayLabelColor,
+    pub(crate) element_legend_label_bold: bool,
     pub(crate) element_legend_label_size: f32,
     pub(crate) element_legend_sphere_scale: f32,
     pub(crate) projection_blend: f32,
@@ -823,9 +821,11 @@ impl Default for VisualSettings {
             background: [255, 255, 255],
             axis_colors: [[235, 31, 31], [31, 184, 51], [31, 82, 245]],
             axis_label_size: 20.0,
-            axis_label_font: AxisLabelFont::Monospace,
+            axis_label_color: OverlayLabelColor::Matching,
+            axis_label_bold: true,
             show_element_legend: true,
-            element_legend_text_color: [0, 0, 0],
+            element_legend_label_color: OverlayLabelColor::Black,
+            element_legend_label_bold: false,
             element_legend_label_size: 20.0,
             element_legend_sphere_scale: 2.5,
             projection_blend: 1.0,

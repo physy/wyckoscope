@@ -48,7 +48,9 @@ mod palette {
 
 use palette::*;
 
-const INTERFACE_FONT_NAME: &str = "wyckoscope-noto-sans-cjk-jp";
+const INTERFACE_FONT_NAME: &str = "wyckoscope-noto-sans-jp-regular";
+const INTERFACE_BOLD_FONT_NAME: &str = "wyckoscope-noto-sans-jp-bold";
+const OVERLAY_LABEL_OUTLINE_WIDTH: f32 = 1.1;
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn interface(
@@ -273,8 +275,10 @@ fn draw_orientation_labels(
                 (content_rect.max.x - label_extent).max(label_min.x),
                 (content_rect.max.y - label_extent).max(label_min.y),
             );
-            let font =
-                egui::FontId::new(settings.axis_label_size, settings.axis_label_font.family());
+            let font = overlay_label_font(
+                egui::FontId::proportional(settings.axis_label_size),
+                settings.axis_label_bold,
+            );
             let mut projected_axes = Vec::with_capacity(3);
             for (index, axis) in axes.into_iter().enumerate() {
                 let view_direction = camera_transform.rotation.inverse() * axis.normalize_or_zero();
@@ -296,11 +300,12 @@ fn draw_orientation_labels(
 
             for (index, direction, endpoint) in projected_axes {
                 let label = ["a", "b", "c"][index];
-                let color = egui::Color32::from_rgb(
+                let matching_color = egui::Color32::from_rgb(
                     settings.axis_colors[index][0],
                     settings.axis_colors[index][1],
                     settings.axis_colors[index][2],
                 );
+                let color = overlay_label_color(settings.axis_label_color, matching_color);
                 let galley = painter.layout_no_wrap(label.to_owned(), font.clone(), color);
                 let label_size = galley.size();
                 let perpendicular = egui::vec2(-direction.y, direction.x);
@@ -340,13 +345,20 @@ fn draw_orientation_labels(
                     .map(|(_, _, position, label_rect)| (position, label_rect))
                     .expect("axis label candidates are non-empty");
                 occupied_labels.push(label_rect);
-                painter.text(
-                    label_position,
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    font.clone(),
-                    color,
-                );
+                egui::Area::new(egui::Id::new(("orientation_axis_label", index)))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(label_position)
+                    .pivot(egui::Align2::CENTER_CENTER)
+                    .interactable(false)
+                    .show(ctx, |ui| {
+                        outlined_overlay_label(
+                            ui,
+                            label,
+                            font.clone(),
+                            color,
+                            settings.axis_label_bold,
+                        );
+                    });
             }
         });
 }
@@ -575,16 +587,50 @@ fn draw_element_legend_item(
                 );
                 ui.painter().circle_filled(rect.center(), radius, color);
             }
-            ui.label(
-                egui::RichText::new(symbol)
-                    .size(settings.element_legend_label_size)
-                    .color(egui::Color32::from_rgb(
-                        settings.element_legend_text_color[0],
-                        settings.element_legend_text_color[1],
-                        settings.element_legend_text_color[2],
-                    )),
+            outlined_overlay_label(
+                ui,
+                symbol,
+                egui::FontId::proportional(settings.element_legend_label_size),
+                overlay_label_color(settings.element_legend_label_color, color),
+                settings.element_legend_label_bold,
             );
         });
+}
+
+fn overlay_label_color(mode: OverlayLabelColor, matching_color: egui::Color32) -> egui::Color32 {
+    match mode {
+        OverlayLabelColor::Black => egui::Color32::BLACK,
+        OverlayLabelColor::Matching => matching_color,
+    }
+}
+
+/// Draw a main-viewport label with a stable white outline and, when selected,
+/// the bundled Noto Sans JP Bold face.
+fn outlined_overlay_label(
+    ui: &mut egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    bold: bool,
+) -> egui::Response {
+    let font = overlay_label_font(font, bold);
+    ui.add(
+        OutlinedLabel::new(text)
+            .font(font.clone())
+            .text_color(color)
+            .outline(egui::Stroke::new(
+                OVERLAY_LABEL_OUTLINE_WIDTH,
+                egui::Color32::WHITE,
+            )),
+    )
+}
+
+fn overlay_label_font(mut font: egui::FontId, bold: bool) -> egui::FontId {
+    // The Japanese family supplies an actual Bold face.
+    if bold && matches!(font.family, egui::FontFamily::Proportional) {
+        font.family = egui::FontFamily::Name(INTERFACE_BOLD_FONT_NAME.into());
+    }
+    font
 }
 
 fn app_header(ui: &mut egui::Ui) {
@@ -1992,41 +2038,32 @@ fn ui_view_tab(
             }
         });
         labeled_slider(ui, "Label size", &mut settings.axis_label_size, 11.0..=36.0);
-        ui.label(
-            egui::RichText::new("Label font")
-                .size(11.0)
-                .color(TEXT_SECONDARY),
+        overlay_label_style_controls(
+            ui,
+            "Axis label color",
+            &mut settings.axis_label_color,
+            &mut settings.axis_label_bold,
         );
-        ui.horizontal(|ui| {
-            ui.radio_value(
-                &mut settings.axis_label_font,
-                AxisLabelFont::SansSerif,
-                AxisLabelFont::SansSerif.label(),
-            );
-            ui.radio_value(
-                &mut settings.axis_label_font,
-                AxisLabelFont::Monospace,
-                AxisLabelFont::Monospace.label(),
-            );
-        });
     });
     section(ui, "ELEMENT LEGEND", |ui| {
         ui.checkbox(&mut settings.show_element_legend, "Show visible elements");
-        ui.horizontal(|ui| {
-            ui.label("Text color");
-            ui.color_edit_button_srgb(&mut settings.element_legend_text_color);
-        });
+        overlay_label_style_controls(
+            ui,
+            "Label color",
+            &mut settings.element_legend_label_color,
+            &mut settings.element_legend_label_bold,
+        );
         labeled_slider(
             ui,
             "Label size",
             &mut settings.element_legend_label_size,
-            10.0..=30.0,
+            10.0..=40.0,
         );
         labeled_slider(
             ui,
             "Sphere size",
             &mut settings.element_legend_sphere_scale,
-            0.5..=4.0,
+            0.5..=8.0,
         );
     });
     section(ui, "BACKGROUND", |ui| {
@@ -2691,6 +2728,25 @@ fn color_control(ui: &mut egui::Ui, label: &str, color: &mut [u8; 3]) {
     });
 }
 
+fn overlay_label_style_controls(
+    ui: &mut egui::Ui,
+    color_label: &str,
+    color_mode: &mut OverlayLabelColor,
+    bold: &mut bool,
+) {
+    ui.label(
+        egui::RichText::new(color_label)
+            .size(11.0)
+            .color(TEXT_SECONDARY),
+    );
+    ui.horizontal(|ui| {
+        for mode in [OverlayLabelColor::Black, OverlayLabelColor::Matching] {
+            ui.radio_value(color_mode, mode, mode.label());
+        }
+    });
+    ui.checkbox(bold, "Bold");
+}
+
 fn vector3_control(ui: &mut egui::Ui, label: &str, values: &mut [f32; 3], speed: f64) -> bool {
     ui.label(egui::RichText::new(label).size(11.0).color(TEXT_SECONDARY));
     let mut changed = false;
@@ -2940,8 +2996,18 @@ fn install_interface_font(ctx: &egui::Context) {
     fonts.font_data.insert(
         INTERFACE_FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/NotoSansCJKjp-Regular.otf"
+            "../assets/fonts/NotoSansJP-Regular.otf"
         ))),
+    );
+    fonts.font_data.insert(
+        INTERFACE_BOLD_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/NotoSansJP-Bold.otf"
+        ))),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(INTERFACE_BOLD_FONT_NAME.into()),
+        vec![INTERFACE_BOLD_FONT_NAME.to_owned()],
     );
     let mut fallbacks = fonts
         .families
