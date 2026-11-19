@@ -405,16 +405,53 @@ pub(crate) fn sync_legend_preview_lights(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn orient_occupancy_sectors(
-    camera: Single<&Transform, (With<OrbitCamera>, Without<OccupancySector>)>,
+    camera: Single<(&Transform, &Projection), (With<OrbitCamera>, Without<OccupancySector>)>,
     mut sectors: Query<&mut Transform, With<OccupancySector>>,
 ) {
+    let (camera_transform, projection) = camera.into_inner();
+    let camera_up = camera_transform.rotation * Vec3::Y;
+    // An orthographic camera has no meaningful position: every surface should
+    // face the shared view direction.  In particular, do not use the orbit
+    // distance here, because it intentionally snaps back when the projection
+    // slider reaches its parallel endpoint.
+    let orthographic_view_direction = matches!(projection, Projection::Orthographic(_))
+        .then(|| camera_transform.rotation * Vec3::Z);
     for mut transform in &mut sectors {
-        // The sector mesh is defined around its local Y axis. Matching the
-        // camera rotation makes its local +Z direction point from the site to
-        // the camera, keeping the center of the occupancy fan facing the view.
-        transform.rotation = camera.rotation;
+        let rotation = if let Some(toward_camera) = orthographic_view_direction {
+            occupancy_sector_rotation_for_view(toward_camera, camera_up)
+        } else {
+            occupancy_sector_rotation(
+                camera_transform.translation,
+                camera_up,
+                transform.translation,
+            )
+        };
+        if let Some(rotation) = rotation {
+            transform.rotation = rotation;
+        }
     }
+}
+
+/// Keeps the sector's local +Z (the centre of its visible fan) facing the
+/// camera. This is computed per site instead of inheriting the camera's roll,
+/// so perspective views also remain correct away from the orbit target.
+fn occupancy_sector_rotation(
+    camera_position: Vec3,
+    camera_up: Vec3,
+    sector_position: Vec3,
+) -> Option<Quat> {
+    let toward_camera = (camera_position - sector_position).normalize_or_zero();
+    occupancy_sector_rotation_for_view(toward_camera, camera_up)
+}
+
+fn occupancy_sector_rotation_for_view(toward_camera: Vec3, camera_up: Vec3) -> Option<Quat> {
+    (toward_camera.length_squared() > 1.0e-8).then(|| {
+        Transform::IDENTITY
+            .looking_to(-toward_camera, camera_up)
+            .rotation
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1497,8 +1534,8 @@ fn spawn_render_atom_site(
     let total_occupancy: f32 = atoms.iter().map(|atom| atom.occupancy.max(0.0)).sum();
     let occupancy_scale = total_occupancy.max(1.0).recip();
     let occupied_span = (total_occupancy * occupancy_scale).min(1.0) * std::f32::consts::TAU;
-    // In camera-local space +Z points from the site towards the camera. Start
-    // the occupied fan symmetrically around that direction.
+    // Keep the partial fan centred at a stable angle in the camera-facing
+    // plane; local +Z itself is the axis directed toward the camera.
     let mut start = std::f32::consts::FRAC_PI_2 - occupied_span * 0.5;
     for atom in atoms {
         let fraction = (atom.occupancy.max(0.0) * occupancy_scale).min(1.0);
@@ -1558,10 +1595,63 @@ fn spawn_render_atom_site(
         }
         start += fraction * std::f32::consts::TAU;
     }
+    let vacancy_fraction = (1.0 - total_occupancy).max(0.0);
+    if uses_sectors && vacancy_fraction > 1.0e-5 {
+        let vacancy_mesh = meshes.add(occupancy_sector_mesh(
+            start,
+            start + vacancy_fraction * std::f32::consts::TAU,
+        ));
+        let vacancy_material = atom_materials
+            .entry("__occupancy_vacancy__".to_string())
+            .or_insert_with(|| {
+                create_atom_material(
+                    materials,
+                    ElementStyle {
+                        color: Color::WHITE,
+                        display_radius: 0.0,
+                        covalent_radius: 0.0,
+                    },
+                    settings,
+                )
+            })
+            .clone();
+        if settings.show_outlines && settings.atom_display_mode != AtomDisplayMode::Wireframe {
+            commands.spawn((
+                Mesh3d(vacancy_mesh.clone()),
+                MeshMaterial3d(outline_material.clone()),
+                Transform::from_translation(first.position).with_scale(Vec3::splat(radius * 1.025)),
+                OccupancySector,
+                CrystalVisual,
+            ));
+        }
+        let mut vacancy = commands.spawn((
+            Name::new(format!("{} vacancy occupancy sector", first.label)),
+            Mesh3d(vacancy_mesh),
+            MeshMaterial3d(
+                if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+                    wireframe_fill_material.clone()
+                } else {
+                    vacancy_material
+                },
+            ),
+            Transform::from_translation(first.position).with_scale(Vec3::splat(radius)),
+            OccupancySector,
+            CrystalVisual,
+        ));
+        if settings.atom_display_mode == AtomDisplayMode::Wireframe {
+            vacancy.insert((
+                Wireframe,
+                WireframeColor {
+                    color: Color::WHITE,
+                },
+            ));
+        }
+    }
 }
 
-/// Unit-sphere surface covering an azimuthal occupancy fraction. Leaving the
-/// unused azimuth range empty makes vacancies visible without alpha blending.
+/// Unit-sphere surface covering an azimuthal occupancy fraction around its
+/// local Z axis. With +Z pointed at the camera, the sectors form a pie fan in
+/// screen space rather than vertical longitude strips.
 fn occupancy_sector_mesh(start: f32, end: f32) -> Mesh {
     const LATITUDE_SEGMENTS: usize = 20;
     const FULL_AZIMUTH_SEGMENTS: f32 = 32.0;
@@ -1573,11 +1663,11 @@ fn occupancy_sector_mesh(start: f32, end: f32) -> Mesh {
     let mut normals = Vec::with_capacity(positions.capacity());
     for latitude in 0..=LATITUDE_SEGMENTS {
         let theta = std::f32::consts::PI * latitude as f32 / LATITUDE_SEGMENTS as f32;
-        let y = theta.cos();
+        let z = theta.cos();
         let radial = theta.sin();
         for azimuth in 0..=azimuth_segments {
             let phi = start + span * azimuth as f32 / azimuth_segments as f32;
-            let point = Vec3::new(radial * phi.cos(), y, radial * phi.sin());
+            let point = Vec3::new(radial * phi.cos(), radial * phi.sin(), z);
             positions.push(point.to_array());
             normals.push(point.to_array());
         }
@@ -1590,11 +1680,11 @@ fn occupancy_sector_mesh(start: f32, end: f32) -> Mesh {
             let bottom_left = ((latitude + 1) * stride + azimuth) as u32;
             indices.extend([
                 top_left,
-                top_left + 1,
                 bottom_left,
                 top_left + 1,
+                top_left + 1,
+                bottom_left,
                 bottom_left + 1,
-                bottom_left,
             ]);
         }
     }
@@ -2400,10 +2490,11 @@ pub(crate) fn view_directions(structure: &CrystalStructure) -> [(&'static str, V
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_fractional, crystal_to_world, miller_plane_normal, periodic_image_count,
-        periodic_image_offsets, resolved_vector_direction, vector_matches_atom,
+        canonical_fractional, crystal_to_world, miller_plane_normal, occupancy_sector_rotation,
+        occupancy_sector_rotation_for_view, periodic_image_count, periodic_image_offsets,
+        resolved_vector_direction, vector_matches_atom,
     };
-    use bevy::prelude::{Mat3, Vec3};
+    use bevy::prelude::{EulerRot, Mat3, Quat, Vec3};
     use wyckoscope::model::{SiteId, UnitCell};
 
     use crate::state::{
@@ -2438,6 +2529,25 @@ mod tests {
         let b = crystal_to_world(Vec3::Y);
         let c = crystal_to_world(Vec3::Z);
         assert!(a.cross(b).dot(c) > 0.999);
+    }
+
+    #[test]
+    fn occupancy_sector_faces_the_camera_from_each_site() {
+        let camera = Vec3::new(4.0, 3.0, 10.0);
+        let site = Vec3::new(-2.0, 1.0, -1.0);
+        let rotation = occupancy_sector_rotation(camera, Vec3::Y, site).expect("distinct points");
+        let expected = (camera - site).normalize();
+        assert!((rotation * Vec3::Z).dot(expected) > 0.999_9);
+    }
+
+    #[test]
+    fn occupancy_sector_orthographic_view_uses_a_shared_camera_direction() {
+        let camera_rotation = Quat::from_euler(EulerRot::YXZ, 0.7, -0.35, 0.0);
+        let toward_camera = camera_rotation * Vec3::Z;
+        let camera_up = camera_rotation * Vec3::Y;
+        let rotation = occupancy_sector_rotation_for_view(toward_camera, camera_up)
+            .expect("valid view direction");
+        assert!((rotation * Vec3::Z).dot(toward_camera) > 0.999_9);
     }
 
     #[test]
