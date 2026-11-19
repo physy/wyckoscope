@@ -37,7 +37,7 @@ impl ElementColorScheme {
 
 impl Default for ElementColorScheme {
     fn default() -> Self {
-        Self::Wyckoscope
+        Self::Crystallographic
     }
 }
 

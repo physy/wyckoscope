@@ -2349,15 +2349,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui_alignments"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c25d479b3cddeb1fe55a502c1890bfd8c68fc9f40a7b3dc42b29393bf39bbb28"
-dependencies = [
- "egui",
-]
-
-[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6384,7 +6375,6 @@ dependencies = [
  "bevy_egui",
  "cryspglib",
  "egui-text-outline",
- "egui_alignments",
  "rfd",
  "serde",
  "serde_json",

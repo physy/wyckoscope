@@ -2,7 +2,6 @@ use std::{collections::HashSet, sync::Arc};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use egui_alignments::Row;
 use egui_text_outline::OutlinedLabel;
 
 use crate::{
@@ -51,6 +50,8 @@ use palette::*;
 const INTERFACE_FONT_NAME: &str = "wyckoscope-noto-sans-jp-regular";
 const INTERFACE_BOLD_FONT_NAME: &str = "wyckoscope-noto-sans-jp-bold";
 const OVERLAY_LABEL_OUTLINE_WIDTH: f32 = 1.1;
+const LEGEND_LABEL_BASE_SIZE: f32 = 18.0;
+const LEGEND_SPHERE_BASE_RADIUS: f32 = 14.0;
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn interface(
@@ -79,6 +80,11 @@ pub(crate) fn interface(
     if !*interface_font_registered {
         install_interface_font(ctx);
         *interface_font_registered = true;
+        // `Context::set_fonts` is applied at the next egui frame boundary.
+        // Do not resolve the named Bold family in this same frame, or egui
+        // correctly reports it as not yet bound.
+        ctx.request_repaint();
+        return Ok(());
     }
     configure_egui_style(ctx);
     let max_panel_width = (ctx.content_rect().width() - MIN_RENDER_WIDTH).clamp(260.0, 560.0);
@@ -570,31 +576,30 @@ fn draw_element_legend_item(
         appearance.color[1],
         appearance.color[2],
     );
-    let radius = (5.0 * settings.element_legend_sphere_scale).clamp(3.0, 16.0);
-    let item_height = (radius * 2.0 + 3.0).max(settings.element_legend_label_size + 3.0);
-    Row::new(egui::Align::Center)
-        .min_height(item_height)
-        .show(ui, |ui| {
-            if let Some(preview) = previews.entries.get(symbol) {
-                ui.add(
-                    egui::Image::new((preview.texture_id, egui::vec2(radius * 2.0, radius * 2.0)))
-                        .maintain_aspect_ratio(true),
-                );
-            } else {
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(radius * 2.0 + 7.0, item_height),
-                    egui::Sense::hover(),
-                );
-                ui.painter().circle_filled(rect.center(), radius, color);
-            }
-            outlined_overlay_label(
-                ui,
-                symbol,
-                egui::FontId::proportional(settings.element_legend_label_size),
-                overlay_label_color(settings.element_legend_label_color, color),
-                settings.element_legend_label_bold,
+    let scale = settings.element_legend_scale.clamp(0.5, 3.0);
+    let radius = LEGEND_SPHERE_BASE_RADIUS * scale;
+    let label_size = LEGEND_LABEL_BASE_SIZE * scale;
+    // Keep the sphere's diameter larger than the outlined label at every
+    // scale. Native `horizontal` then provides the only alignment needed.
+    ui.horizontal(|ui| {
+        if let Some(preview) = previews.entries.get(symbol) {
+            ui.add(
+                egui::Image::new((preview.texture_id, egui::vec2(radius * 2.0, radius * 2.0)))
+                    .maintain_aspect_ratio(true),
             );
-        });
+        } else {
+            let (rect, _) = ui
+                .allocate_exact_size(egui::vec2(radius * 2.0, radius * 2.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), radius, color);
+        }
+        outlined_overlay_label(
+            ui,
+            symbol,
+            egui::FontId::proportional(label_size),
+            overlay_label_color(settings.element_legend_label_color, color),
+            settings.element_legend_label_bold,
+        );
+    });
 }
 
 fn overlay_label_color(mode: OverlayLabelColor, matching_color: egui::Color32) -> egui::Color32 {
@@ -2055,15 +2060,9 @@ fn ui_view_tab(
         );
         labeled_slider(
             ui,
-            "Label size",
-            &mut settings.element_legend_label_size,
-            10.0..=40.0,
-        );
-        labeled_slider(
-            ui,
-            "Sphere size",
-            &mut settings.element_legend_sphere_scale,
-            0.5..=8.0,
+            "Legend size",
+            &mut settings.element_legend_scale,
+            0.5..=3.0,
         );
     });
     section(ui, "BACKGROUND", |ui| {
