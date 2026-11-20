@@ -6,7 +6,7 @@ use bevy::{
 use bevy_egui::input::EguiWantsInput;
 
 use crate::{
-    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE,
+    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, RENDER_TAB_BAR_HEIGHT,
     scene::{AtomPickable, atoms_are_bonded, crystal_to_world},
     state::*,
 };
@@ -36,7 +36,7 @@ pub(crate) fn select_atom(
         pointer.press_position = (!egui_input.wants_any_pointer_input())
             .then(|| window.cursor_position())
             .flatten()
-            .filter(|position| position.x >= layout.width);
+            .filter(|position| position.x >= layout.width && position.y >= RENDER_TAB_BAR_HEIGHT);
     }
     if !mouse_buttons.just_released(MouseButton::Left) {
         return;
@@ -139,10 +139,9 @@ pub(crate) fn orbit_camera(
             || mouse_buttons.pressed(MouseButton::Right)
             || (shift && mouse_buttons.pressed(MouseButton::Left));
         if mouse_buttons.pressed(MouseButton::Left) && !pan {
-            if let Some(current) = window
-                .cursor_position()
-                .and_then(|position| arcball_position(position, &window, layout.width))
-            {
+            if let Some(current) = window.cursor_position().and_then(|position| {
+                arcball_position(position, &window, layout.width, RENDER_TAB_BAR_HEIGHT)
+            }) {
                 if let Some(previous) = orbit.arcball_anchor {
                     let incremental = Quat::from_rotation_arc(current, previous);
                     orbit.rotation = (orbit.rotation * incremental).normalize();
@@ -223,12 +222,14 @@ pub(crate) fn update_camera_viewports(
     let scale_factor = window.scale_factor();
     let panel_width = (layout.width * scale_factor).round() as u32;
     let render_x = panel_width.min(physical_size.x.saturating_sub(1));
+    let render_y = (RENDER_TAB_BAR_HEIGHT * scale_factor).round() as u32;
+    let render_y = render_y.min(physical_size.y.saturating_sub(1));
     let render_size = UVec2::new(
         physical_size.x.saturating_sub(render_x).max(1),
-        physical_size.y.max(1),
+        physical_size.y.saturating_sub(render_y).max(1),
     );
     let render_viewport = Viewport {
-        physical_position: UVec2::new(render_x, 0),
+        physical_position: UVec2::new(render_x, render_y),
         physical_size: render_size,
         ..default()
     };
@@ -253,8 +254,8 @@ pub(crate) fn update_camera_viewports(
     axis_camera.viewport = Some(Viewport {
         physical_position: UVec2::new(
             render_x.saturating_add(margin),
-            physical_size
-                .y
+            render_y
+                .saturating_add(render_size.y)
                 .saturating_sub(margin)
                 .saturating_sub(axis_size),
         ),
@@ -329,16 +330,21 @@ fn update_camera_transform_at_distance(
     transform.rotation = orbit.rotation;
 }
 
-fn arcball_position(cursor: Vec2, window: &Window, panel_width: f32) -> Option<Vec3> {
+fn arcball_position(
+    cursor: Vec2,
+    window: &Window,
+    panel_width: f32,
+    render_top: f32,
+) -> Option<Vec3> {
     let render_width = (window.width() - panel_width).max(1.0);
-    let render_height = window.height().max(1.0);
-    if cursor.x < panel_width {
+    let render_height = (window.height() - render_top).max(1.0);
+    if cursor.x < panel_width || cursor.y < render_top {
         return None;
     }
     let scale = render_width.min(render_height);
     let point = Vec2::new(
         (2.0 * (cursor.x - panel_width) - render_width) / scale,
-        (render_height - 2.0 * cursor.y) / scale,
+        (render_height - 2.0 * (cursor.y - render_top)) / scale,
     );
     let radius_squared = point.length_squared();
     Some(if radius_squared <= 1.0 {

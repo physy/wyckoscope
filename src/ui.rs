@@ -5,12 +5,12 @@ use bevy_egui::{EguiContexts, egui};
 use egui_text_outline::OutlinedLabel;
 
 use crate::{
-    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, MIN_RENDER_WIDTH,
+    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, MIN_RENDER_WIDTH, RENDER_TAB_BAR_HEIGHT,
     file_io::{
         request_open_dialog, request_project_open_dialog, request_project_save_dialog,
         request_save_dialog,
     },
-    project::{ProjectHistory, UndoRedoRequests},
+    project::{ProjectHistory, ProjectWorkspace, UndoRedoRequests},
     scene::{
         crystal_to_world, default_appearance, measurement_label, periodic_image_count,
         scene_object_position, view_directions,
@@ -41,7 +41,7 @@ mod palette {
     pub const WIDGET_INACTIVE: Color32 = Color32::from_rgb(82, 82, 91);
     pub const WIDGET_INACTIVE_WEAK: Color32 = Color32::from_rgb(63, 63, 70);
     pub const WIDGET_HOVERED: Color32 = Color32::from_rgb(106, 106, 117);
-    pub const WIDGET_ACTIVE: Color32 = Color32::from_rgb(130, 130, 143);
+    pub const WIDGET_ACTIVE: Color32 = Color32::from_rgb(110, 110, 113);
     pub const SELECTION: Color32 = Color32::from_rgb(144, 144, 158);
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn interface(
     scene_status: Res<SceneStatus>,
     mut selection: ResMut<SelectionState>,
     mut inspector: ResMut<InspectorState>,
-    history: Res<ProjectHistory>,
+    history: (Res<ProjectHistory>, ResMut<ProjectWorkspace>),
     mut history_requests: ResMut<UndoRedoRequests>,
     mut dirty: ResMut<SceneDirty>,
     mut layout: ResMut<InspectorLayout>,
@@ -76,6 +76,7 @@ pub(crate) fn interface(
     mut interface_font_registered: Local<bool>,
 ) -> Result {
     let (export, previews) = legend;
+    let (history, mut workspace) = history;
     let ctx = contexts.ctx_mut()?;
     if !*interface_font_registered {
         install_interface_font(ctx);
@@ -143,6 +144,7 @@ pub(crate) fn interface(
                 });
         });
     layout.width = panel.response.rect.width();
+    workspace_tabs(ctx, &mut workspace, layout.width);
     let (_, camera_transform, render_camera, camera_global_transform) = &*camera;
     draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
     draw_element_legend(ctx, &state, &settings, &overrides, &previews, layout.width);
@@ -168,6 +170,94 @@ pub(crate) fn interface(
             });
     }
     Ok(())
+}
+
+fn workspace_tabs(ctx: &egui::Context, workspace: &mut ProjectWorkspace, panel_width: f32) {
+    let content = ctx.content_rect();
+    // The document bar belongs to the render viewport itself. `AXIS_VIEW_MARGIN`
+    // only applies to the small orientation gizmo in that viewport.
+    let width = (content.width() - panel_width).max(0.0);
+    egui::Area::new(egui::Id::new("document_tabs"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(panel_width, 0.0))
+        .show(ctx, |ui| {
+            // This is a fixed viewport header, rather than a content-sized Frame: paint its
+            // entire rectangle so the background never depends on the tab count or scroll width.
+            let (bar_rect, _) = ui.allocate_exact_size(
+                egui::vec2(width, RENDER_TAB_BAR_HEIGHT),
+                egui::Sense::hover(),
+            );
+            ui.painter()
+                .rect_filled(bar_rect, 0.0, WIDGET_INACTIVE_WEAK);
+            ui.painter().rect_stroke(
+                bar_rect,
+                0.0,
+                egui::Stroke::new(1.0, CARD_STROKE),
+                egui::StrokeKind::Inside,
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(bar_rect.shrink(1.0)),
+                |ui| {
+                    let scroll = &mut ui.style_mut().spacing.scroll;
+                    scroll.bar_width = 4.0;
+                    scroll.floating_width = 1.5;
+                    scroll.dormant_handle_opacity = 0.18;
+                    scroll.active_handle_opacity = 0.4;
+                    scroll.interact_handle_opacity = 0.65;
+                    egui::ScrollArea::horizontal()
+                        .id_salt("document_tab_scroll")
+                        .max_height(RENDER_TAB_BAR_HEIGHT)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                let can_close = workspace.can_close_tabs();
+                                for index in 0..workspace.tab_count() {
+                                    let Some(label) = workspace.tab_label(index) else {
+                                        continue;
+                                    };
+                                    let label = label.to_owned();
+                                    let selected = index == workspace.active_index();
+                                    egui::Frame::NONE
+                                        .fill(if selected {
+                                            WIDGET_ACTIVE
+                                        } else {
+                                            WIDGET_INACTIVE_WEAK
+                                        })
+                                        // .inner_margin(egui::Margin::symmetric(5, 1))
+                                        .show(ui, |ui| {
+                                            ui.add_space(5.0);
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(label)
+                                                        .selected(selected)
+                                                        .frame(false)
+                                                        .min_size(egui::vec2(18.0, 22.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                workspace.request_activate(index);
+                                            }
+                                            let close = ui.add_enabled(
+                                                can_close,
+                                                egui::Button::new(
+                                                    egui::RichText::new("×").size(14.0),
+                                                )
+                                                .fill(egui::Color32::TRANSPARENT)
+                                                .min_size(egui::vec2(18.0, 22.0)),
+                                            );
+                                            if close.clicked() {
+                                                workspace.request_close(index);
+                                            }
+                                            if !can_close {
+                                                close.on_hover_text("Keep at least one tab open");
+                                            }
+                                        });
+                                }
+                            });
+                        });
+                },
+            );
+        });
 }
 
 fn structure_selection_dialog(ctx: &egui::Context, selection: &mut StructureSelection) {
@@ -402,7 +492,10 @@ fn draw_element_legend(
     egui::Area::new(egui::Id::new("element_legend"))
         .anchor(
             egui::Align2::LEFT_TOP,
-            egui::vec2(panel_width + AXIS_VIEW_MARGIN, AXIS_VIEW_MARGIN),
+            egui::vec2(
+                panel_width + AXIS_VIEW_MARGIN,
+                RENDER_TAB_BAR_HEIGHT + AXIS_VIEW_MARGIN,
+            ),
         )
         .interactable(false)
         .show(ctx, |ui| {
@@ -763,7 +856,7 @@ fn ui_file_tab(
             request_open_dialog(dialogs);
         }
         ui.label(
-            egui::RichText::new("or drop .cif, .mcif, or .vesta anywhere")
+            egui::RichText::new("or drop .cif, .mcif, .vesta, or .wyckoscope anywhere")
                 .size(11.0)
                 .color(TEXT_SECONDARY),
         );

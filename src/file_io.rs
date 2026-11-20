@@ -7,31 +7,29 @@ use bevy::{prelude::*, tasks::IoTaskPool, window::FileDragAndDrop};
 use wyckoscope::parser;
 
 use crate::{
-    project::{ProjectHistory, UndoRedoRequests, capture_document, read_project, write_project},
+    project::{
+        ProjectWorkspace, UndoRedoRequests, capture_document, document_from_structure,
+        read_project_document, write_project,
+    },
     state::*,
 };
 
 pub(crate) fn load_dropped_file(
     mut drops: MessageReader<FileDragAndDrop>,
     mut state: ResMut<AppState>,
-    mut dirty: ResMut<SceneDirty>,
-    mut selection: ResMut<SelectionState>,
-    mut settings: ResMut<VisualSettings>,
     mut structure_selection: ResMut<StructureSelection>,
-    mut history: ResMut<ProjectHistory>,
+    mut workspace: ResMut<ProjectWorkspace>,
+    camera: Single<&OrbitCamera>,
 ) {
     for event in drops.read() {
-        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event
-            && load_file(
+        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event {
+            load_file(
                 path_buf,
                 &mut state,
-                &mut settings,
-                &mut dirty,
-                &mut selection,
                 &mut structure_selection,
-            )
-        {
-            history.clear();
+                &mut workspace,
+                &camera,
+            );
         }
     }
 }
@@ -145,14 +143,12 @@ pub(crate) fn request_project_save_dialog(dialogs: &mut AsyncDialogs) {
 pub(crate) fn poll_async_dialogs(
     mut dialogs: ResMut<AsyncDialogs>,
     mut state: ResMut<AppState>,
-    mut dirty: ResMut<SceneDirty>,
-    mut selection: ResMut<SelectionState>,
-    mut settings: ResMut<VisualSettings>,
+    settings: ResMut<VisualSettings>,
     mut structure_selection: ResMut<StructureSelection>,
-    mut overrides: ResMut<ElementOverrides>,
+    overrides: ResMut<ElementOverrides>,
     mut export: ResMut<ExportState>,
-    mut camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
-    mut history: ResMut<ProjectHistory>,
+    camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
+    mut workspace: ResMut<ProjectWorkspace>,
 ) {
     let open = dialogs
         .open_receiver
@@ -160,17 +156,14 @@ pub(crate) fn poll_async_dialogs(
         .and_then(|receiver| receiver.lock().ok().and_then(|value| value.try_recv().ok()));
     if let Some(path) = open {
         dialogs.open_receiver = None;
-        if let Some(path) = path
-            && load_file(
+        if let Some(path) = path {
+            load_file(
                 &path,
                 &mut state,
-                &mut settings,
-                &mut dirty,
-                &mut selection,
                 &mut structure_selection,
-            )
-        {
-            history.clear();
+                &mut workspace,
+                &camera.0,
+            );
         }
     }
     let save = dialogs
@@ -198,19 +191,9 @@ pub(crate) fn poll_async_dialogs(
     if let Some(path) = project_open {
         dialogs.project_open_receiver = None;
         if let Some(path) = path {
-            let (orbit, transform) = &mut *camera;
-            if let Err(error) = read_project(
-                &path,
-                &mut state,
-                &mut settings,
-                &mut overrides,
-                &mut selection,
-                &mut dirty,
-                orbit,
-                transform,
-                &mut history,
-            ) {
-                state.error = Some(error);
+            match read_project_document(&path) {
+                Ok(document) => workspace.request_open(document),
+                Err(error) => state.error = Some(error),
             }
         }
     }
@@ -236,13 +219,26 @@ pub(crate) fn poll_async_dialogs(
 fn load_file(
     path: &Path,
     state: &mut AppState,
-    settings: &mut VisualSettings,
-    dirty: &mut SceneDirty,
-    selection: &mut SelectionState,
     structure_selection: &mut StructureSelection,
-) -> bool {
+    workspace: &mut ProjectWorkspace,
+    camera: &OrbitCamera,
+) {
     structure_selection.candidates.clear();
     structure_selection.selected = None;
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wyckoscope"))
+    {
+        match read_project_document(path) {
+            Ok(document) => {
+                workspace.request_open(document);
+                state.error = None;
+            }
+            Err(error) => state.error = Some(error),
+        }
+        return;
+    }
     match parser::parse_path_candidates(path) {
         Ok(mut candidates) if candidates.len() == 1 => {
             let candidate = candidates.remove(0);
@@ -252,12 +248,10 @@ fn load_file(
                     .and_then(|value| value.to_str())
                     .unwrap_or("Structure"),
                 &candidate.data_name,
-                state,
-                settings,
-                dirty,
-                selection,
+                workspace,
+                camera,
             );
-            true
+            state.error = None;
         }
         Ok(candidates) => {
             structure_selection.file_name = path
@@ -267,11 +261,9 @@ fn load_file(
                 .to_string();
             structure_selection.candidates = candidates;
             state.error = None;
-            false
         }
         Err(error) => {
             state.error = Some(error.to_string());
-            false
         }
     }
 }
@@ -279,11 +271,8 @@ fn load_file(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_selected_structure(
     mut structure_selection: ResMut<StructureSelection>,
-    mut state: ResMut<AppState>,
-    mut settings: ResMut<VisualSettings>,
-    mut dirty: ResMut<SceneDirty>,
-    mut selection: ResMut<SelectionState>,
-    mut history: ResMut<ProjectHistory>,
+    mut workspace: ResMut<ProjectWorkspace>,
+    camera: Single<&OrbitCamera>,
 ) {
     let Some(index) = structure_selection.selected.take() else {
         return;
@@ -296,23 +285,18 @@ pub(crate) fn apply_selected_structure(
         candidate.structure,
         &structure_selection.file_name,
         &candidate.data_name,
-        &mut state,
-        &mut settings,
-        &mut dirty,
-        &mut selection,
+        &mut workspace,
+        &camera,
     );
     structure_selection.candidates.clear();
-    history.clear();
 }
 
 fn apply_structure(
     mut structure: wyckoscope::model::CrystalStructure,
     file_name: &str,
     data_name: &str,
-    state: &mut AppState,
-    settings: &mut VisualSettings,
-    dirty: &mut SceneDirty,
-    selection: &mut SelectionState,
+    workspace: &mut ProjectWorkspace,
+    camera: &OrbitCamera,
 ) {
     if matches!(
         structure.title.trim(),
@@ -325,16 +309,16 @@ fn apply_structure(
             .unwrap_or("Untitled structure")
             .to_string();
     }
-    apply_imported_visuals(settings, &structure);
-    state.structure = structure;
-    state.file_name = if data_name.is_empty() {
+    let mut settings = VisualSettings::default();
+    apply_imported_visuals(&mut settings, &structure);
+    let tab_name = if data_name.is_empty() {
         file_name.to_string()
     } else {
         format!("{file_name} · {data_name}")
     };
-    state.error = None;
-    selection.atoms.clear();
-    dirty.mark(true);
+    workspace.request_open(document_from_structure(
+        structure, tab_name, settings, camera,
+    ));
 }
 
 fn apply_imported_visuals(

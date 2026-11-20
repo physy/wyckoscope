@@ -883,7 +883,7 @@ pub(crate) struct SelectedAtom {
     pub(crate) coordination: usize,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub(crate) struct SelectionState {
     pub(crate) atoms: Vec<SelectedAtom>,
 }

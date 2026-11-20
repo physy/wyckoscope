@@ -36,7 +36,7 @@ struct CameraSnapshot {
     rotation: [f32; 4],
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub(crate) struct ProjectHistory {
     undo: Vec<ProjectDocument>,
     redo: Vec<ProjectDocument>,
@@ -51,6 +51,154 @@ pub(crate) struct ProjectHistory {
 pub(crate) struct UndoRedoRequests {
     pub(crate) undo: bool,
     pub(crate) redo: bool,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct ProjectWorkspace {
+    tabs: Vec<WorkspaceTab>,
+    active: usize,
+    pending: Vec<WorkspaceRequest>,
+}
+
+#[derive(Clone)]
+struct WorkspaceTab {
+    document: ProjectDocument,
+    history: ProjectHistory,
+    selection: SelectionState,
+    error: Option<String>,
+    reset_camera: bool,
+}
+
+enum WorkspaceRequest {
+    Activate(usize),
+    Open(Box<ProjectDocument>),
+    Close(usize),
+}
+
+impl ProjectWorkspace {
+    pub(crate) fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub(crate) fn active_index(&self) -> usize {
+        self.active
+    }
+
+    pub(crate) fn tab_label(&self, index: usize) -> Option<&str> {
+        self.tabs
+            .get(index)
+            .map(|tab| tab.document.file_name.as_str())
+    }
+
+    pub(crate) fn request_activate(&mut self, index: usize) {
+        if index < self.tabs.len() && index != self.active {
+            self.pending.push(WorkspaceRequest::Activate(index));
+        }
+    }
+
+    pub(crate) fn request_open(&mut self, document: ProjectDocument) {
+        self.pending
+            .push(WorkspaceRequest::Open(Box::new(document)));
+    }
+
+    pub(crate) fn can_close_tabs(&self) -> bool {
+        self.tabs.len() > 1
+    }
+
+    pub(crate) fn request_close(&mut self, index: usize) {
+        if self.can_close_tabs() && index < self.tabs.len() {
+            self.pending.push(WorkspaceRequest::Close(index));
+        }
+    }
+}
+
+pub(crate) fn initialize_workspace(
+    state: Res<AppState>,
+    settings: Res<VisualSettings>,
+    overrides: Res<ElementOverrides>,
+    camera: Single<&OrbitCamera>,
+    history: Res<ProjectHistory>,
+    selection: Res<SelectionState>,
+    mut workspace: ResMut<ProjectWorkspace>,
+) {
+    workspace.tabs.push(WorkspaceTab {
+        document: capture_document(&state, &settings, &overrides, &camera),
+        history: history.clone(),
+        selection: selection.clone(),
+        error: state.error.clone(),
+        reset_camera: false,
+    });
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn apply_workspace_requests(
+    mut workspace: ResMut<ProjectWorkspace>,
+    mut state: ResMut<AppState>,
+    mut settings: ResMut<VisualSettings>,
+    mut overrides: ResMut<ElementOverrides>,
+    mut selection: ResMut<SelectionState>,
+    mut scene_status: ResMut<crate::state::SceneStatus>,
+    mut dirty: ResMut<SceneDirty>,
+    mut camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
+    mut history: ResMut<ProjectHistory>,
+) {
+    if workspace.pending.is_empty() {
+        return;
+    }
+    let previous_active = workspace.active;
+    if let Some(active) = workspace.tabs.get_mut(previous_active) {
+        active.document = capture_document(&state, &settings, &overrides, &camera.0);
+        active.history = history.clone();
+        active.selection = selection.clone();
+        active.error = state.error.clone();
+    }
+    let requests = std::mem::take(&mut workspace.pending);
+    for request in requests {
+        match request {
+            WorkspaceRequest::Activate(index) => workspace.active = index,
+            WorkspaceRequest::Open(document) => {
+                workspace.tabs.push(WorkspaceTab {
+                    document: *document,
+                    history: ProjectHistory::default(),
+                    selection: SelectionState::default(),
+                    error: None,
+                    reset_camera: true,
+                });
+                workspace.active = workspace.tabs.len() - 1;
+            }
+            WorkspaceRequest::Close(index) if workspace.tabs.len() > 1 => {
+                workspace.tabs.remove(index);
+                if index < workspace.active {
+                    workspace.active -= 1;
+                } else if index == workspace.active {
+                    workspace.active = workspace.active.min(workspace.tabs.len() - 1);
+                }
+            }
+            WorkspaceRequest::Close(_) => {}
+        }
+    }
+    let active_index = workspace.active;
+    let active = &mut workspace.tabs[active_index];
+    if active.history.current.is_none() {
+        active.history.reset(active.document.clone());
+    }
+    let (orbit, transform) = &mut *camera;
+    restore_document(
+        active.document.clone(),
+        &mut state,
+        &mut settings,
+        &mut overrides,
+        &mut selection,
+        &mut dirty,
+        orbit,
+        transform,
+    );
+    *history = active.history.clone();
+    *selection = active.selection.clone();
+    state.error = active.error.clone();
+    scene_status.warning = None;
+    dirty.mark(active.reset_camera);
+    active.reset_camera = false;
 }
 
 pub(crate) fn initialize_history(
@@ -153,15 +301,6 @@ impl ProjectHistory {
         self.pending_fingerprint = None;
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.current = None;
-        self.fingerprint = None;
-        self.undo.clear();
-        self.redo.clear();
-        self.pending = None;
-        self.pending_fingerprint = None;
-    }
-
     pub(crate) fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -186,6 +325,25 @@ impl ProjectHistory {
         }
         self.redo.clear();
         self.fingerprint = Some(next_fingerprint);
+    }
+}
+
+pub(crate) fn document_from_structure(
+    structure: CrystalStructure,
+    file_name: String,
+    visual_settings: VisualSettings,
+    camera: &OrbitCamera,
+) -> ProjectDocument {
+    ProjectDocument {
+        structure,
+        file_name,
+        visual_settings,
+        element_overrides: ElementOverrides::default(),
+        camera: CameraSnapshot {
+            target: camera.target.to_array(),
+            radius: camera.radius,
+            rotation: camera.rotation.to_array(),
+        },
     }
 }
 
@@ -215,17 +373,7 @@ pub(crate) fn write_project(path: &Path, document: ProjectDocument) -> Result<()
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn read_project(
-    path: &Path,
-    state: &mut AppState,
-    settings: &mut VisualSettings,
-    overrides: &mut ElementOverrides,
-    selection: &mut SelectionState,
-    dirty: &mut SceneDirty,
-    camera: &mut OrbitCamera,
-    camera_transform: &mut Transform,
-    history: &mut ProjectHistory,
-) -> Result<(), String> {
+pub(crate) fn read_project_document(path: &Path) -> Result<ProjectDocument, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let file: ProjectFile = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     if file.format_version != PROJECT_FORMAT_VERSION {
@@ -234,19 +382,7 @@ pub(crate) fn read_project(
             file.format_version
         ));
     }
-    let document = file.try_into_document()?;
-    restore_document(
-        document.clone(),
-        state,
-        settings,
-        overrides,
-        selection,
-        dirty,
-        camera,
-        camera_transform,
-    );
-    history.reset(document);
-    Ok(())
+    file.try_into_document()
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -23,7 +23,8 @@ use file_io::{
 };
 use lighting::sync_environment;
 use project::{
-    ProjectHistory, UndoRedoRequests, apply_history_requests, initialize_history, track_history,
+    ProjectHistory, ProjectWorkspace, UndoRedoRequests, apply_history_requests,
+    apply_workspace_requests, initialize_history, initialize_workspace, track_history,
 };
 use scene::{
     orient_occupancy_sectors, rebuild_legend_previews, rebuild_scene, setup,
@@ -43,7 +44,8 @@ pub(crate) const AXIS_RENDER_LAYER: usize = 1;
 pub(crate) const MAX_RENDER_ATOMS: u64 = 150_000;
 /// Keep enough room for the scene and its overlay legend beside the inspector.
 pub(crate) const MIN_RENDER_WIDTH: f32 = 640.0;
-pub(crate) const MIN_RENDER_HEIGHT: f32 = 420.0;
+pub(crate) const RENDER_TAB_BAR_HEIGHT: f32 = 24.0;
+pub(crate) const MIN_RENDER_HEIGHT: f32 = 420.0 + RENDER_TAB_BAR_HEIGHT;
 const MIN_INSPECTOR_WIDTH: f32 = 480.0;
 
 fn main() {
@@ -73,6 +75,7 @@ fn main() {
         .init_resource::<SelectionPointer>()
         .init_resource::<StructureSelection>()
         .init_resource::<ProjectHistory>()
+        .init_resource::<ProjectWorkspace>()
         .init_resource::<UndoRedoRequests>()
         .insert_resource(SceneDirty {
             rebuild: true,
@@ -99,13 +102,17 @@ fn main() {
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(WireframePlugin::default())
-        .add_systems(Startup, (setup, initialize_history).chain())
+        .add_systems(
+            Startup,
+            (setup, initialize_history, initialize_workspace).chain(),
+        )
         .add_systems(
             Update,
             (
                 load_dropped_file,
                 poll_async_dialogs,
                 apply_selected_structure,
+                apply_workspace_requests,
                 keyboard_shortcuts,
                 apply_history_requests,
                 select_atom,
