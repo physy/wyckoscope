@@ -605,7 +605,11 @@ pub(crate) fn rebuild_scene(
         }
     }
 
-    let bonds = find_bonds(&render_atoms, &settings);
+    let bonds = if settings.show_bonds {
+        find_bonds(&render_atoms, &settings)
+    } else {
+        Vec::new()
+    };
     let external_bond_atoms: HashSet<_> = bonds
         .iter()
         .filter(|&&(first, second)| {
@@ -619,23 +623,25 @@ pub(crate) fn rebuild_scene(
     visible_indices.extend(external_bond_atoms.iter().copied());
     visible_indices.sort_unstable();
     visible_indices.dedup();
-    for group in render_atom_site_groups(&render_atoms, &visible_indices) {
-        spawn_render_atom_site(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &sphere_mesh,
-            &selection_material,
-            &outline_material,
-            &wireframe_fill_material,
-            &mut atom_materials,
-            &group,
-            &overrides,
-            &settings,
-            &selection,
-        );
+    if settings.show_elements {
+        for group in render_atom_site_groups(&render_atoms, &visible_indices) {
+            spawn_render_atom_site(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &sphere_mesh,
+                &selection_material,
+                &outline_material,
+                &wireframe_fill_material,
+                &mut atom_materials,
+                &group,
+                &overrides,
+                &settings,
+                &selection,
+            );
+        }
     }
-    if settings.show_thermal_ellipsoids {
+    if settings.show_elements && settings.show_thermal_ellipsoids {
         let mut ellipsoid_materials = HashMap::new();
         for &index in &visible_indices {
             let atom = &render_atoms[index];
@@ -663,7 +669,15 @@ pub(crate) fn rebuild_scene(
             }
         }
     }
-    if settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
+    if settings.show_bonds && settings.atom_display_mode != AtomDisplayMode::SpaceFilling {
+        // Bicolor bonds reuse the element material. Populate this cache even
+        // when the atoms themselves are globally hidden.
+        for atom in &render_atoms {
+            let style = resolved_style(&atom.element, &overrides, settings.element_color_scheme);
+            atom_materials
+                .entry(atom.element.clone())
+                .or_insert_with(|| create_atom_material(&mut materials, style, &settings));
+        }
         for &(a, b) in &bonds {
             let first = &render_atoms[a];
             let second = &render_atoms[b];
@@ -686,10 +700,11 @@ pub(crate) fn rebuild_scene(
         }
     }
 
-    if settings
-        .bond_rules
-        .iter()
-        .any(|rule| rule.enabled && rule.show_polyhedra)
+    if settings.show_bonds
+        && settings
+            .bond_rules
+            .iter()
+            .any(|rule| rule.enabled && rule.show_polyhedra)
     {
         let mut adjacency = vec![Vec::new(); render_atoms.len()];
         for &(first, second) in &bonds {
@@ -759,49 +774,52 @@ pub(crate) fn rebuild_scene(
         }
     }
 
-    for vector in settings
-        .vectors
-        .layers
-        .iter()
-        .filter(|vector| vector.enabled)
-    {
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(
-                vector.style.color[0],
-                vector.style.color[1],
-                vector.style.color[2],
-            ),
-            emissive: Color::srgb_u8(
-                vector.style.color[0],
-                vector.style.color[1],
-                vector.style.color[2],
-            )
-            .to_linear()
-                * 0.10,
-            metallic: 0.12,
-            perceptual_roughness: 0.24,
-            ..default()
-        });
-        for (_, atom) in render_atoms.iter().enumerate().filter(|(index, atom)| {
-            (*index < inside_atom_count || external_bond_atoms.contains(index))
-                && vector_matches_atom(&vector.target, atom)
-        }) {
-            let direction = resolved_vector_direction(vector, atom, &structure.cell);
-            let radius = resolved_style(&atom.element, &overrides, settings.element_color_scheme)
-                .display_radius
-                * settings.atom_scale
-                * atom.occupancy.max(0.15).cbrt();
-            spawn_atom_vector(
-                &mut commands,
-                cylinder_mesh.clone(),
-                arrow_head_mesh.clone(),
-                material.clone(),
-                atom.position,
-                direction,
-                radius,
-                &vector.style,
-                settings.vectors.display_scale,
-            );
+    if settings.show_vectors {
+        for vector in settings
+            .vectors
+            .layers
+            .iter()
+            .filter(|vector| vector.enabled)
+        {
+            let material = materials.add(StandardMaterial {
+                base_color: Color::srgb_u8(
+                    vector.style.color[0],
+                    vector.style.color[1],
+                    vector.style.color[2],
+                ),
+                emissive: Color::srgb_u8(
+                    vector.style.color[0],
+                    vector.style.color[1],
+                    vector.style.color[2],
+                )
+                .to_linear()
+                    * 0.10,
+                metallic: 0.12,
+                perceptual_roughness: 0.24,
+                ..default()
+            });
+            for (_, atom) in render_atoms.iter().enumerate().filter(|(index, atom)| {
+                (*index < inside_atom_count || external_bond_atoms.contains(index))
+                    && vector_matches_atom(&vector.target, atom)
+            }) {
+                let direction = resolved_vector_direction(vector, atom, &structure.cell);
+                let radius =
+                    resolved_style(&atom.element, &overrides, settings.element_color_scheme)
+                        .display_radius
+                        * settings.atom_scale
+                        * atom.occupancy.max(0.15).cbrt();
+                spawn_atom_vector(
+                    &mut commands,
+                    cylinder_mesh.clone(),
+                    arrow_head_mesh.clone(),
+                    material.clone(),
+                    atom.position,
+                    direction,
+                    radius,
+                    &vector.style,
+                    settings.vectors.display_scale,
+                );
+            }
         }
     }
 
@@ -861,17 +879,19 @@ pub(crate) fn rebuild_scene(
         .iter()
         .map(|value| value.length())
         .fold(1.0_f32, f32::max);
-    spawn_scene_objects(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &settings.scene_objects.objects,
-        structure,
-        center,
-        sphere_mesh.clone(),
-        cylinder_mesh.clone(),
-        arrow_head_mesh,
-    );
+    if settings.show_scene_objects {
+        spawn_scene_objects(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &settings.scene_objects.objects,
+            structure,
+            center,
+            sphere_mesh.clone(),
+            cylinder_mesh.clone(),
+            arrow_head_mesh,
+        );
+    }
     let reset = dirty.reset_camera;
     dirty.reset_camera = false;
     if reset {

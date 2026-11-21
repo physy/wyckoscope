@@ -467,7 +467,7 @@ fn draw_element_legend(
     previews: &LegendPreviews,
     panel_width: f32,
 ) {
-    if !settings.show_element_legend {
+    if !settings.show_elements || !settings.show_element_legend {
         return;
     }
     let mut elements: Vec<_> = state
@@ -525,6 +525,9 @@ fn draw_scene_object_labels(
     camera_transform: &GlobalTransform,
     panel_width: f32,
 ) {
+    if !settings.show_scene_objects {
+        return;
+    }
     let supercell = settings.supercell.map(|value| value.max(1));
     let total_vector = state.structure.cell.vectors[0] * supercell[0] as f32
         + state.structure.cell.vectors[1] * supercell[1] as f32
@@ -1272,6 +1275,13 @@ fn ui_objects_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "SCENE OBJECTS", |ui| {
+        if ui
+            .checkbox(&mut settings.show_scene_objects, "Show scene objects")
+            .changed()
+        {
+            dirty.mark(false);
+        }
+        panel_divider(ui);
         ui.horizontal_wrapped(|ui| {
             for (label, kind) in [
                 (
@@ -1669,6 +1679,13 @@ fn ui_vectors_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "ATOMIC VECTORS / SPINS", |ui| {
+        if ui
+            .checkbox(&mut settings.show_vectors, "Show all vectors")
+            .changed()
+        {
+            dirty.mark(false);
+        }
+        panel_divider(ui);
         let vector_count = settings.vectors.layers.len();
         ui.label(
             egui::RichText::new(
@@ -1898,6 +1915,13 @@ fn ui_bonds_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "BOND DISPLAY", |ui| {
+        if ui
+            .checkbox(&mut settings.show_bonds, "Show bonds and polyhedra")
+            .changed()
+        {
+            dirty.mark(false);
+        }
+        panel_divider(ui);
         ui.label(
             egui::RichText::new(
                 "Bonds are drawn only for enabled bond rules; each rule has its own style.",
@@ -2867,6 +2891,13 @@ fn ui_elements_tab(
     dirty: &mut SceneDirty,
 ) {
     section(ui, "ELEMENT STYLES", |ui| {
+        if ui
+            .checkbox(&mut settings.show_elements, "Show all elements")
+            .changed()
+        {
+            dirty.mark(false);
+        }
+        panel_divider(ui);
         let old_scheme = settings.element_color_scheme;
         ui.horizontal(|ui| {
             ui.label("Color scheme");
