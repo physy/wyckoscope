@@ -18,18 +18,94 @@ use wyckoscope::{
 use crate::{AXIS_RENDER_LAYER, MAX_RENDER_ATOMS, camera::update_camera_transform, state::*};
 
 const BOUNDARY_EPSILON: f32 = 1.0e-4;
-const LEGEND_RENDER_LAYER: usize = 2;
+pub(crate) const LEGEND_RENDER_LAYER: usize = 2;
 const LEGEND_ICON_SIZE: u32 = 96;
+const AXIS_OVERLAY_SIZE: u32 = 512;
 
 /// Marker for the custom meshes used to visualize partial or mixed occupancy.
 /// Unlike a plain sphere, a sector has an observable orientation.
 #[derive(Component)]
 pub(crate) struct OccupancySector;
 
+/// Project crystallographic axis tips into a square axis overlay and place labels
+/// just beyond the rendered arrowheads. Used by both preview and PNG export.
+pub(crate) fn projected_axis_label_centers(
+    axes: [Vec3; 3],
+    camera_rotation: Quat,
+    overlay_size: f32,
+    label_size: f32,
+) -> [Vec2; 3] {
+    let origin = Vec2::splat(overlay_size * 0.5);
+    let projected = axes.map(|axis| {
+        let view = camera_rotation.inverse() * axis.normalize_or_zero();
+        let projected = Vec2::new(view.x, -view.y);
+        let direction = projected.try_normalize().unwrap_or(Vec2::NEG_Y);
+        let endpoint = origin + projected * (overlay_size / 3.4 * 1.2);
+        (direction, endpoint)
+    });
+    let mut centers = [Vec2::ZERO; 3];
+    let half_extent = label_size * 0.65;
+    let lower = Vec2::splat(half_extent);
+    let upper = Vec2::splat((overlay_size - half_extent).max(half_extent));
+    for (index, (direction, endpoint)) in projected.into_iter().enumerate() {
+        let perpendicular = Vec2::new(-direction.y, direction.x);
+        let candidates = [
+            direction,
+            (direction + perpendicular * 0.75).normalize_or_zero(),
+            (direction - perpendicular * 0.75).normalize_or_zero(),
+            perpendicular,
+            -perpendicular,
+            (direction + perpendicular * 1.4).normalize_or_zero(),
+            (direction - perpendicular * 1.4).normalize_or_zero(),
+        ];
+        let gap = label_size * 0.55 + 7.0 * overlay_size / 180.0;
+        centers[index] = candidates
+            .into_iter()
+            .enumerate()
+            .map(|(candidate_index, candidate)| {
+                let center = (endpoint
+                    + candidate * (gap + candidate_index as f32 * overlay_size / 120.0))
+                    .clamp(lower, upper);
+                let axis_clearance = half_extent + 3.0 * overlay_size / 180.0;
+                let hits_axis = projected.iter().any(|(_, axis_endpoint)| {
+                    point_segment_distance_squared(center, origin, *axis_endpoint)
+                        < axis_clearance * axis_clearance
+                });
+                let hits_origin = center.distance_squared(origin)
+                    < (half_extent + 7.0 * overlay_size / 180.0).powi(2);
+                let hits_label = centers[..index].iter().any(|other| {
+                    let delta = (center - *other).abs();
+                    delta.x < half_extent * 2.0 && delta.y < half_extent * 2.0
+                });
+                (
+                    usize::from(hits_axis) + usize::from(hits_origin) + usize::from(hits_label),
+                    candidate_index,
+                    center,
+                )
+            })
+            .min_by_key(|(collisions, candidate_index, _)| (*collisions, *candidate_index))
+            .map(|(_, _, center)| center)
+            .expect("axis label candidates are non-empty");
+    }
+    centers
+}
+
+fn point_segment_distance_squared(point: Vec2, start: Vec2, end: Vec2) -> f32 {
+    let segment = end - start;
+    let length_squared = segment.length_squared();
+    if length_squared <= f32::EPSILON {
+        return point.distance_squared(start);
+    }
+    let t = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+    point.distance_squared(start + segment * t)
+}
+
 pub(crate) fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut egui_textures: ResMut<EguiUserTextures>,
 ) {
     commands.spawn((
         Name::new("Exact-color background camera"),
@@ -123,16 +199,23 @@ pub(crate) fn setup(
         RenderLayers::layer(AXIS_RENDER_LAYER),
     ));
     commands.insert_resource(OrientationAxisMaterials(axis_materials));
+    let axis_image = images.add(Image::new_target_texture(
+        AXIS_OVERLAY_SIZE,
+        AXIS_OVERLAY_SIZE,
+        TextureFormat::bevy_default(),
+    ));
+    let axis_texture_id = egui_textures.add_image(EguiTextureHandle::Strong(axis_image.clone()));
+    commands.insert_resource(AxisOverlay {
+        image: axis_image.clone(),
+        texture_id: axis_texture_id,
+    });
     commands.spawn((
         Name::new("3D orientation-axis camera"),
         Camera3d::default(),
         Camera {
             order: 1,
-            clear_color: ClearColorConfig::None,
-            output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
-                clear_color: ClearColorConfig::None,
-            },
+            target: RenderTarget::Image(axis_image.into()),
+            clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
         Projection::Orthographic(OrthographicProjection {

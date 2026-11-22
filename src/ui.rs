@@ -13,7 +13,7 @@ use crate::{
     project::{ProjectHistory, ProjectWorkspace, UndoRedoRequests},
     scene::{
         crystal_to_world, default_appearance, measurement_label, periodic_image_count,
-        scene_object_position, view_directions,
+        projected_axis_label_centers, scene_object_position, view_directions,
     },
     state::*,
     transport::{TransportAnalysis, analyze as analyze_transport, component_label},
@@ -61,7 +61,7 @@ pub(crate) fn interface(
     mut overrides: ResMut<ElementOverrides>,
     mut structure_selection: ResMut<StructureSelection>,
     mut dialogs: ResMut<AsyncDialogs>,
-    legend: (Res<ExportState>, Res<LegendPreviews>),
+    legend: (ResMut<ExportState>, Res<LegendPreviews>, Res<AxisOverlay>),
     scene_status: Res<SceneStatus>,
     mut selection: ResMut<SelectionState>,
     mut inspector: ResMut<InspectorState>,
@@ -75,7 +75,7 @@ pub(crate) fn interface(
     >,
     mut interface_font_registered: Local<bool>,
 ) -> Result {
-    let (export, previews) = legend;
+    let (mut export, previews, axis_overlay) = legend;
     let (history, mut workspace) = history;
     let ctx = contexts.ctx_mut()?;
     if !*interface_font_registered {
@@ -109,9 +109,8 @@ pub(crate) fn interface(
                 .show(ui, |ui| match inspector.tab {
                     InspectorTab::File => ui_file_tab(
                         ui,
-                        &mut settings,
                         &mut dialogs,
-                        &export,
+                        &mut export,
                         &history,
                         &mut history_requests,
                     ),
@@ -146,7 +145,14 @@ pub(crate) fn interface(
     layout.width = panel.response.rect.width();
     workspace_tabs(ctx, &mut workspace, layout.width);
     let (_, camera_transform, render_camera, camera_global_transform) = &*camera;
-    draw_orientation_labels(ctx, &state, &settings, camera_transform, layout.width);
+    draw_orientation_labels(
+        ctx,
+        &state,
+        &settings,
+        camera_transform,
+        &axis_overlay,
+        layout.width,
+    );
     draw_element_legend(ctx, &state, &settings, &overrides, &previews, layout.width);
     draw_scene_object_labels(
         ctx,
@@ -157,6 +163,17 @@ pub(crate) fn interface(
         layout.width,
     );
     structure_selection_dialog(ctx, &mut structure_selection);
+    export_preview_modal(
+        ctx,
+        &state,
+        &overrides,
+        &axis_overlay,
+        &previews,
+        camera_transform.rotation,
+        &mut settings,
+        &mut dialogs,
+        &mut export,
+    );
     if let Some(error) = state.error.clone() {
         egui::Window::new("Could not open structure")
             .collapsible(false)
@@ -342,6 +359,7 @@ fn draw_orientation_labels(
     state: &AppState,
     settings: &VisualSettings,
     camera_transform: &Transform,
+    axis_overlay: &AxisOverlay,
     panel_width: f32,
 ) {
     egui::Area::new(egui::Id::new("orientation_axes"))
@@ -355,46 +373,27 @@ fn draw_orientation_labels(
                 egui::vec2(AXIS_VIEW_SIZE, AXIS_VIEW_SIZE),
                 egui::Sense::hover(),
             );
-            // Labels deliberately paint outside the 3D axis viewport.  The viewport is
-            // compact, while large labels need room around it to remain fully visible.
-            ui.set_clip_rect(ctx.content_rect());
-            let painter = ui.painter();
-            let origin = rect.center();
-            let axes = state.structure.cell.vectors.map(crystal_to_world);
-            let label_extent = settings.axis_label_size * 0.65 + 7.0;
-            let content_rect = ctx.content_rect();
-            let label_min = egui::pos2(
-                (panel_width + AXIS_VIEW_MARGIN).max(content_rect.min.x) + label_extent,
-                content_rect.min.y + label_extent,
+            ui.painter().image(
+                axis_overlay.texture_id,
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
             );
-            let label_max = egui::pos2(
-                (content_rect.max.x - label_extent).max(label_min.x),
-                (content_rect.max.y - label_extent).max(label_min.y),
+            // Labels are separate egui overlays, but their centers come from the same
+            // projection/layout function used by preview and PNG export.
+            ui.set_clip_rect(ctx.content_rect());
+            let axes = state.structure.cell.vectors.map(crystal_to_world);
+            let label_positions = projected_axis_label_centers(
+                axes,
+                camera_transform.rotation,
+                AXIS_VIEW_SIZE,
+                settings.axis_label_size,
             );
             let font = overlay_label_font(
                 egui::FontId::proportional(settings.axis_label_size),
                 settings.axis_label_bold,
             );
-            let mut projected_axes = Vec::with_capacity(3);
-            for (index, axis) in axes.into_iter().enumerate() {
-                let view_direction = camera_transform.rotation.inverse() * axis.normalize_or_zero();
-                let projected = egui::vec2(view_direction.x, -view_direction.y);
-                let projected_length = projected.length();
-                let direction = if projected_length > 1.0e-4 {
-                    projected / projected_length
-                } else {
-                    egui::vec2(0.0, -1.0)
-                };
-                let endpoint = origin + projected * (AXIS_VIEW_SIZE / 3.4 * 1.2);
-                projected_axes.push((index, direction, endpoint));
-            }
-            let axis_segments: Vec<_> = projected_axes
-                .iter()
-                .map(|(_, _, endpoint)| (origin, *endpoint))
-                .collect();
-            let mut occupied_labels = Vec::with_capacity(3);
-
-            for (index, direction, endpoint) in projected_axes {
+            for (index, label_position) in label_positions.into_iter().enumerate() {
                 let label = ["a", "b", "c"][index];
                 let matching_color = egui::Color32::from_rgb(
                     settings.axis_colors[index][0],
@@ -402,48 +401,9 @@ fn draw_orientation_labels(
                     settings.axis_colors[index][2],
                 );
                 let color = overlay_label_color(settings.axis_label_color, matching_color);
-                let galley = painter.layout_no_wrap(label.to_owned(), font.clone(), color);
-                let label_size = galley.size();
-                let perpendicular = egui::vec2(-direction.y, direction.x);
-                let gap = settings.axis_label_size * 0.55 + 7.0;
-                let candidate_directions = [
-                    direction,
-                    (direction + perpendicular * 0.75).normalized(),
-                    (direction - perpendicular * 0.75).normalized(),
-                    perpendicular,
-                    -perpendicular,
-                    (direction + perpendicular * 1.4).normalized(),
-                    (direction - perpendicular * 1.4).normalized(),
-                ];
-                let (label_position, label_rect) = candidate_directions
-                    .into_iter()
-                    .enumerate()
-                    .map(|(candidate_index, candidate_direction)| {
-                        let position = (endpoint
-                            + candidate_direction * (gap + candidate_index as f32 * 1.5))
-                            .clamp(label_min, label_max);
-                        let label_rect = egui::Rect::from_center_size(position, label_size);
-                        let hits_axis = axis_segments.iter().any(|&(start, end)| {
-                            segment_intersects_rect(start, end, label_rect.expand(3.0))
-                        });
-                        let hits_origin = label_rect.expand(7.0).contains(origin);
-                        let hits_label = occupied_labels
-                            .iter()
-                            .any(|other: &egui::Rect| other.expand(4.0).intersects(label_rect));
-                        let collisions = usize::from(hits_axis)
-                            + usize::from(hits_origin)
-                            + usize::from(hits_label);
-                        (collisions, candidate_index, position, label_rect)
-                    })
-                    .min_by_key(|(collisions, candidate_index, _, _)| {
-                        (*collisions, *candidate_index)
-                    })
-                    .map(|(_, _, position, label_rect)| (position, label_rect))
-                    .expect("axis label candidates are non-empty");
-                occupied_labels.push(label_rect);
                 egui::Area::new(egui::Id::new(("orientation_axis_label", index)))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(label_position)
+                    .fixed_pos(rect.min + egui::vec2(label_position.x, label_position.y))
                     .pivot(egui::Align2::CENTER_CENTER)
                     .interactable(false)
                     .show(ctx, |ui| {
@@ -792,9 +752,8 @@ fn tab_button(ui: &mut egui::Ui, active: &mut InspectorTab, tab: InspectorTab, l
 #[allow(clippy::too_many_arguments)]
 fn ui_file_tab(
     ui: &mut egui::Ui,
-    settings: &mut VisualSettings,
     dialogs: &mut AsyncDialogs,
-    export: &ExportState,
+    export: &mut ExportState,
     history: &ProjectHistory,
     history_requests: &mut UndoRedoRequests,
 ) {
@@ -864,7 +823,7 @@ fn ui_file_tab(
                 .color(TEXT_SECONDARY),
         );
     });
-    ui_export_tab(ui, settings, dialogs, export);
+    ui_export_tab(ui, dialogs, export);
 }
 
 fn ui_structure_tab(
@@ -3016,70 +2975,483 @@ fn ui_elements_tab(
     });
 }
 
-fn ui_export_tab(
-    ui: &mut egui::Ui,
-    settings: &mut VisualSettings,
-    dialogs: &mut AsyncDialogs,
-    export: &ExportState,
-) {
+fn ui_export_tab(ui: &mut egui::Ui, dialogs: &mut AsyncDialogs, export: &mut ExportState) {
     section(ui, "HIGH-RESOLUTION PNG", |ui| {
         ui.label(
-            egui::RichText::new("Exports the 3D view without the inspector UI.")
+            egui::RichText::new("Configure the image and arrange its contents in the preview.")
                 .size(11.0)
                 .color(TEXT_SECONDARY),
         );
-        ui.horizontal_wrapped(|ui| {
-            for (label, size) in [
-                ("Full HD", [1920, 1080]),
-                ("4K", [3840, 2160]),
-                ("Square", [4096, 4096]),
-                ("Print", [6000, 4000]),
-            ] {
-                if ui.button(label).clicked() {
-                    settings.export_size = size;
+        let busy = dialogs.save_receiver.is_some() || export.stage.is_some() || export.capturing;
+        ui.add_space(14.0);
+        if ui
+            .scope_builder(
+                egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
+                |ui| {
+                    ui.add_enabled(
+                        !busy,
+                        egui::Button::new(if busy {
+                            "Exporting…"
+                        } else {
+                            "Configure and export…"
+                        })
+                        .min_size(egui::vec2(ui.available_width(), 40.0)),
+                    )
+                },
+            )
+            .inner
+            .clicked()
+        {
+            export.preview_open = true;
+        }
+        if let Some(message) = &export.message {
+            ui.label(egui::RichText::new(message).size(11.0).color(ACCENT));
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_preview_modal(
+    ctx: &egui::Context,
+    state: &AppState,
+    overrides: &ElementOverrides,
+    axis_overlay: &AxisOverlay,
+    legend_previews: &LegendPreviews,
+    camera_rotation: Quat,
+    settings: &mut VisualSettings,
+    dialogs: &mut AsyncDialogs,
+    export: &mut ExportState,
+) {
+    if !export.preview_open {
+        return;
+    }
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("export_preview_modal"))
+        .backdrop_color(egui::Color32::from_black_alpha(190))
+        .show(ctx, |ui| {
+            ui.set_width(760.0);
+            ui.heading("Export preview");
+            ui.label(
+                egui::RichText::new(
+                    "Drag the crystal, axis, or legend. Scroll over an item to resize it.",
+                )
+                .color(TEXT_SECONDARY),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                for (label, size) in [
+                    ("Full HD", [1920, 1080]),
+                    ("4K", [3840, 2160]),
+                    ("Square", [4096, 4096]),
+                    ("Print", [6000, 4000]),
+                ] {
+                    if ui.button(label).clicked() {
+                        settings.export_size = size;
+                    }
                 }
-            }
-        });
-        egui::Grid::new("export_dimensions")
-            .num_columns(2)
-            .show(ui, |ui| {
+                ui.separator();
                 ui.label("Width");
                 ui.add(
                     egui::DragValue::new(&mut settings.export_size[0])
                         .range(256..=8192)
                         .suffix(" px"),
                 );
-                ui.end_row();
                 ui.label("Height");
                 ui.add(
                     egui::DragValue::new(&mut settings.export_size[1])
                         .range(256..=8192)
                         .suffix(" px"),
                 );
-                ui.end_row();
             });
-        let busy = dialogs.save_receiver.is_some() || export.stage.is_some() || export.capturing;
-        ui.add_space(14.0);
-        let export_button_width = ui.available_width();
-        let response = ui
-            .scope_builder(
-                egui::UiBuilder::new().layout(egui::Layout::top_down(egui::Align::Center)),
-                |ui| {
-                    ui.add_enabled(
-                        !busy,
-                        egui::Button::new(if busy { "Exporting…" } else { "Export PNG" })
-                            .min_size(egui::vec2(export_button_width, 40.0)),
-                    )
+            ui.horizontal(|ui| {
+                ui.label("Background");
+                egui::ComboBox::from_id_salt("export_preview_background")
+                    .selected_text(settings.export_background.label())
+                    .show_ui(ui, |ui| {
+                        for background in ExportBackground::ALL {
+                            ui.selectable_value(
+                                &mut settings.export_background,
+                                background,
+                                background.label(),
+                            );
+                        }
+                    });
+                if settings.export_background == ExportBackground::SolidColor {
+                    ui.label("Color");
+                    ui.color_edit_button_srgb(&mut settings.export_background_color);
+                }
+                ui.add_space(12.0);
+                ui.label("Scene scale");
+                ui.add(
+                    egui::Slider::new(&mut settings.export_view_scale, 1.0..=5.0).show_value(true),
+                );
+                if ui.button("Reset framing").clicked() {
+                    settings.export_view_scale = 1.0;
+                    settings.export_layout.crystal_offset = [0.0, 0.0];
+                }
+            });
+            ui.add_space(6.0);
+            let aspect =
+                settings.export_size[0].max(1) as f32 / settings.export_size[1].max(1) as f32;
+            let (workspace, _) =
+                ui.allocate_exact_size(egui::vec2(720.0, 540.0), egui::Sense::hover());
+            ui.painter().rect_filled(workspace, 4.0, SURFACE_EXTREME);
+            let available = workspace.shrink(54.0);
+            let (width, height) = if aspect >= available.width() / available.height() {
+                (available.width(), available.width() / aspect)
+            } else {
+                (available.height() * aspect, available.height())
+            };
+            let rect = egui::Rect::from_center_size(workspace.center(), egui::vec2(width, height));
+            if let Some(preview) = &export.preview {
+                ui.painter().with_clip_rect(rect).image(
+                    preview.texture_id,
+                    rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                ui.painter().rect_filled(rect, 0.0, SURFACE_EXTREME);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Preparing 3D preview…",
+                    egui::FontId::proportional(18.0),
+                    TEXT_SECONDARY,
+                );
+            }
+            let mut symbols: Vec<_> = state
+                .structure
+                .visible_atoms(settings.expand_symmetry)
+                .iter()
+                .filter(|atom| {
+                    overrides
+                        .0
+                        .get(&atom.element)
+                        .is_none_or(|appearance| appearance.visible)
+                })
+                .map(|atom| atom.element.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            symbols.sort_unstable();
+            draw_export_preview_images(ui, rect, settings, axis_overlay, legend_previews, &symbols);
+            draw_export_preview_labels(
+                ui,
+                rect,
+                state,
+                camera_rotation,
+                settings,
+                overrides,
+                &symbols,
+            );
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.5, TEXT_SECONDARY),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                rect.left_top() + egui::vec2(0.0, -2.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{} × {}", settings.export_size[0], settings.export_size[1]),
+                egui::FontId::proportional(11.0),
+                TEXT_SECONDARY,
+            );
+            let canvas_response = ui.interact(
+                rect,
+                egui::Id::new("export_crystal_layout"),
+                egui::Sense::click_and_drag(),
+            );
+            let axis_size = rect.width().min(rect.height()) * 0.22;
+            let axis_rect = export_overlay_rect(
+                rect,
+                &settings.export_layout.axis,
+                axis_size * settings.export_layout.axis.scale.clamp(0.5, 3.0),
+                0,
+            );
+            let axis_response = edit_export_overlay(
+                ui,
+                rect,
+                "axis",
+                &mut settings.export_layout.axis,
+                axis_rect,
+            );
+            let legend_icon = rect.width().min(rect.height()) * 0.065;
+            let legend_columns = usize::from(symbols.len() > 7) + 1;
+            let legend_rows = symbols.len().div_ceil(legend_columns).max(1);
+            let legend_size = legend_icon * settings.export_layout.legend.scale.clamp(0.5, 3.0);
+            let legend_rect =
+                export_overlay_rect(rect, &settings.export_layout.legend, legend_size, 0)
+                    .union(export_overlay_rect(
+                        rect,
+                        &settings.export_layout.legend,
+                        legend_size,
+                        legend_rows.saturating_sub(1),
+                    ))
+                    .expand2(egui::vec2(legend_size * 2.0 * legend_columns as f32, 0.0));
+            let legend_response = edit_export_overlay(
+                ui,
+                rect,
+                "legend",
+                &mut settings.export_layout.legend,
+                legend_rect,
+            );
+            if canvas_response.dragged() && !axis_response.dragged() && !legend_response.dragged() {
+                let delta = ui.input(|input| input.pointer.delta());
+                settings.export_layout.crystal_offset[0] =
+                    (settings.export_layout.crystal_offset[0] + delta.x / rect.width())
+                        .clamp(-2.0, 2.0);
+                settings.export_layout.crystal_offset[1] =
+                    (settings.export_layout.crystal_offset[1] + delta.y / rect.height())
+                        .clamp(-2.0, 2.0);
+            }
+            if canvas_response.hovered() && !axis_response.hovered() && !legend_response.hovered() {
+                let scroll = ui.input(|input| input.raw_scroll_delta.y);
+                if scroll != 0.0 {
+                    settings.export_view_scale =
+                        (settings.export_view_scale * (scroll * 0.002).exp()).clamp(1.0, 5.0);
+                }
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut settings.export_layout.axis.visible, "Axis");
+                ui.checkbox(
+                    &mut settings.export_layout.axis.labels_visible,
+                    "Axis labels",
+                );
+                ui.checkbox(&mut settings.export_layout.legend.visible, "Legend");
+                ui.checkbox(
+                    &mut settings.export_layout.legend.labels_visible,
+                    "Legend labels",
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Export PNG").clicked() {
+                        request_save_dialog(
+                            dialogs,
+                            settings.export_size,
+                            settings.export_background,
+                            settings.export_background_color,
+                            settings.export_view_scale,
+                            settings.export_layout.clone(),
+                        );
+                        close = true;
+                    }
+                });
+            });
+        });
+    export.preview_open = !close;
+}
+
+fn edit_export_overlay(
+    ui: &mut egui::Ui,
+    canvas: egui::Rect,
+    id: &'static str,
+    layout: &mut ExportOverlayLayout,
+    rect: egui::Rect,
+) -> egui::Response {
+    if !layout.visible {
+        return ui.interact(
+            egui::Rect::from_min_size(canvas.min, egui::Vec2::ZERO),
+            egui::Id::new(("export_overlay_disabled", id)),
+            egui::Sense::hover(),
+        );
+    }
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("export_overlay", id)),
+        egui::Sense::drag(),
+    );
+    if response.dragged() {
+        let delta = ui.input(|input| input.pointer.delta());
+        layout.position[0] = (layout.position[0] + delta.x / canvas.width()).clamp(0.0, 1.0);
+        layout.position[1] = (layout.position[1] + delta.y / canvas.height()).clamp(0.0, 1.0);
+    }
+    if response.hovered() {
+        let scroll = ui.input(|input| input.raw_scroll_delta.y);
+        if scroll != 0.0 {
+            layout.scale = (layout.scale * (1.0 + scroll * 0.002)).clamp(0.5, 3.0);
+        }
+    }
+    response
+}
+
+fn export_overlay_rect(
+    canvas: egui::Rect,
+    layout: &ExportOverlayLayout,
+    size: f32,
+    row: usize,
+) -> egui::Rect {
+    let size = size.max(1.0).min(canvas.width()).min(canvas.height());
+    let center = egui::pos2(
+        canvas.left() + layout.position[0] * canvas.width(),
+        canvas.top() + layout.position[1] * canvas.height() + row as f32 * size,
+    );
+    let min = center - egui::Vec2::splat(size * 0.5);
+    egui::Rect::from_min_size(min, egui::Vec2::splat(size))
+}
+
+fn export_legend_item_rect(
+    canvas: egui::Rect,
+    layout: &ExportOverlayLayout,
+    size: f32,
+    index: usize,
+    count: usize,
+) -> egui::Rect {
+    let columns = usize::from(count > 7) + 1;
+    let rows = count.div_ceil(columns).max(1);
+    let column = index / rows;
+    let row = index % rows;
+    let mut item_layout = layout.clone();
+    item_layout.position[0] += column as f32 * size * 3.0 / canvas.width().max(1.0);
+    export_overlay_rect(canvas, &item_layout, size, row)
+}
+
+fn draw_export_preview_images(
+    ui: &egui::Ui,
+    canvas: egui::Rect,
+    settings: &VisualSettings,
+    axis_overlay: &AxisOverlay,
+    legend_previews: &LegendPreviews,
+    symbols: &[String],
+) {
+    let painter = ui.painter();
+    let base = canvas.width().min(canvas.height());
+    if settings.export_layout.axis.visible {
+        let size = base * 0.22 * settings.export_layout.axis.scale.clamp(0.5, 3.0);
+        let rect = export_overlay_rect(canvas, &settings.export_layout.axis, size, 0);
+        painter.image(
+            axis_overlay.texture_id,
+            rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    if settings.export_layout.legend.visible {
+        let size = base * 0.065 * settings.export_layout.legend.scale.clamp(0.5, 3.0);
+        for (index, symbol) in symbols.iter().enumerate() {
+            let Some(preview) = legend_previews.entries.get(symbol) else {
+                continue;
+            };
+            let rect = export_legend_item_rect(
+                canvas,
+                &settings.export_layout.legend,
+                size,
+                index,
+                symbols.len(),
+            );
+            painter.image(
+                preview.texture_id,
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+}
+
+fn draw_export_preview_labels(
+    ui: &egui::Ui,
+    canvas: egui::Rect,
+    state: &AppState,
+    camera_rotation: Quat,
+    settings: &VisualSettings,
+    overrides: &ElementOverrides,
+    symbols: &[String],
+) {
+    let painter = ui.painter();
+    let base = canvas.width().min(canvas.height());
+    let draw_label = |position: egui::Pos2,
+                      anchor: egui::Align2,
+                      text: &str,
+                      size: f32,
+                      color: egui::Color32,
+                      bold: bool| {
+        let font = overlay_label_font(egui::FontId::proportional(size), bold);
+        for offset in [
+            egui::vec2(-1.0, 0.0),
+            egui::vec2(1.0, 0.0),
+            egui::vec2(0.0, -1.0),
+            egui::vec2(0.0, 1.0),
+        ] {
+            painter.text(
+                position + offset,
+                anchor,
+                text,
+                font.clone(),
+                egui::Color32::WHITE,
+            );
+        }
+        painter.text(position, anchor, text, font, color);
+    };
+    let axis = &settings.export_layout.axis;
+    if axis.visible && axis.labels_visible {
+        let size = base * 0.22 * axis.scale.clamp(0.5, 3.0);
+        let font_size = (settings.axis_label_size * size / AXIS_VIEW_SIZE).max(8.0);
+        let positions = projected_axis_label_centers(
+            state.structure.cell.vectors.map(crystal_to_world),
+            camera_rotation,
+            size,
+            font_size,
+        );
+        let axis_rect = export_overlay_rect(canvas, axis, size, 0);
+        for (index, text) in ["a", "b", "c"].into_iter().enumerate() {
+            let color = settings.axis_colors[index];
+            let color = match settings.axis_label_color {
+                OverlayLabelColor::Black => [0, 0, 0],
+                OverlayLabelColor::Matching => color,
+            };
+            let position = positions[index];
+            draw_label(
+                axis_rect.min + egui::vec2(position.x, position.y),
+                egui::Align2::CENTER_CENTER,
+                text,
+                font_size,
+                egui::Color32::from_rgb(color[0], color[1], color[2]),
+                settings.axis_label_bold,
+            );
+        }
+    }
+    let legend = &settings.export_layout.legend;
+    if legend.visible && legend.labels_visible {
+        let icon = base * 0.065 * legend.scale.clamp(0.5, 3.0);
+        for (index, symbol) in symbols.iter().enumerate() {
+            let appearance = overrides
+                .0
+                .get(symbol)
+                .cloned()
+                .unwrap_or_else(|| default_appearance(symbol, settings.element_color_scheme));
+            let color = egui::Color32::from_rgb(
+                if settings.element_legend_label_color == OverlayLabelColor::Black {
+                    0
+                } else {
+                    appearance.color[0]
                 },
-            )
-            .inner;
-        if response.clicked() {
-            request_save_dialog(dialogs, settings.export_size);
+                if settings.element_legend_label_color == OverlayLabelColor::Black {
+                    0
+                } else {
+                    appearance.color[1]
+                },
+                if settings.element_legend_label_color == OverlayLabelColor::Black {
+                    0
+                } else {
+                    appearance.color[2]
+                },
+            );
+            let icon_rect = export_legend_item_rect(canvas, legend, icon, index, symbols.len());
+            draw_label(
+                egui::pos2(icon_rect.right() + icon * 0.05, icon_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                symbol,
+                (icon * (LEGEND_LABEL_BASE_SIZE / (2.0 * LEGEND_SPHERE_BASE_RADIUS))).max(8.0),
+                color,
+                settings.element_legend_label_bold,
+            );
         }
-        if let Some(message) = &export.message {
-            ui.label(egui::RichText::new(message).size(11.0).color(ACCENT));
-        }
-    });
+    }
 }
 
 fn configure_egui_style(ctx: &egui::Context) {
@@ -3143,42 +3515,6 @@ fn interface_font_family() -> egui::FontFamily {
     // frame boundary, while the current frame may already resolve text.
     // The custom font is installed first in this family's fallback list.
     egui::FontFamily::Proportional
-}
-
-fn segment_intersects_rect(start: egui::Pos2, end: egui::Pos2, rect: egui::Rect) -> bool {
-    if rect.contains(start) || rect.contains(end) {
-        return true;
-    }
-    let corners = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-    ];
-    corners
-        .into_iter()
-        .zip(corners.into_iter().cycle().skip(1))
-        .take(4)
-        .any(|(edge_start, edge_end)| segments_intersect(start, end, edge_start, edge_end))
-}
-
-fn segments_intersect(
-    first_start: egui::Pos2,
-    first_end: egui::Pos2,
-    second_start: egui::Pos2,
-    second_end: egui::Pos2,
-) -> bool {
-    let cross = |left: egui::Vec2, right: egui::Vec2| left.x * right.y - left.y * right.x;
-    let first = first_end - first_start;
-    let second = second_end - second_start;
-    let denominator = cross(first, second);
-    if denominator.abs() < 1.0e-6 {
-        return false;
-    }
-    let delta = second_start - first_start;
-    let first_t = cross(delta, second) / denominator;
-    let second_t = cross(delta, first) / denominator;
-    (0.0..=1.0).contains(&first_t) && (0.0..=1.0).contains(&second_t)
 }
 
 fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
@@ -3283,25 +3619,4 @@ fn label_outline_controls(
         changed |= labeled_slider(ui, "Outline width", width, 0.5..=5.0);
     }
     changed
-}
-
-#[cfg(test)]
-mod tests {
-    use super::segment_intersects_rect;
-    use bevy_egui::egui;
-
-    #[test]
-    fn axis_segment_collision_detects_a_label_rect() {
-        let rect = egui::Rect::from_min_max(egui::pos2(4.0, 4.0), egui::pos2(8.0, 8.0));
-        assert!(segment_intersects_rect(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(10.0, 10.0),
-            rect
-        ));
-        assert!(!segment_intersects_rect(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(3.0, 3.0),
-            rect
-        ));
-    }
 }

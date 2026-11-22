@@ -655,7 +655,7 @@ impl Default for LightingSettings {
         Self {
             ambient_enabled: true,
             ambient_color: [255, 255, 255],
-            ambient_brightness: 200.0,
+            ambient_brightness: 350.0,
             key_enabled: true,
             key_kind: KeyLightKind::Directional,
             key_color: [255, 255, 255],
@@ -791,6 +791,10 @@ pub(crate) struct VisualSettings {
     pub(crate) lighting: LightingSettings,
     pub(crate) exposure_ev: f32,
     pub(crate) export_size: [u32; 2],
+    pub(crate) export_background: ExportBackground,
+    pub(crate) export_background_color: [u8; 3],
+    pub(crate) export_view_scale: f32,
+    pub(crate) export_layout: ExportLayout,
 }
 
 impl Default for VisualSettings {
@@ -837,6 +841,72 @@ impl Default for VisualSettings {
             lighting: LightingSettings::default(),
             exposure_ev: 9.0,
             export_size: [3840, 2160],
+            export_background: ExportBackground::Viewport,
+            export_background_color: [255, 255, 255],
+            export_view_scale: 1.0,
+            export_layout: ExportLayout::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) enum ExportBackground {
+    #[default]
+    Viewport,
+    Transparent,
+    SolidColor,
+}
+
+impl ExportBackground {
+    pub(crate) const ALL: [Self; 3] = [Self::Viewport, Self::Transparent, Self::SolidColor];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Viewport => "Viewport background",
+            Self::Transparent => "Transparent",
+            Self::SolidColor => "Solid color",
+        }
+    }
+}
+
+/// Placement is normalized to the exported image, so it is resolution independent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ExportOverlayLayout {
+    pub(crate) visible: bool,
+    pub(crate) labels_visible: bool,
+    pub(crate) position: [f32; 2],
+    pub(crate) scale: f32,
+}
+
+impl Default for ExportOverlayLayout {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            labels_visible: true,
+            position: [0.06, 0.06],
+            scale: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ExportLayout {
+    pub(crate) crystal_offset: [f32; 2],
+    pub(crate) axis: ExportOverlayLayout,
+    pub(crate) legend: ExportOverlayLayout,
+}
+
+impl Default for ExportLayout {
+    fn default() -> Self {
+        Self {
+            crystal_offset: [0.0, 0.0],
+            axis: ExportOverlayLayout {
+                position: [0.06, 0.86],
+                ..default()
+            },
+            legend: ExportOverlayLayout::default(),
         }
     }
 }
@@ -919,6 +989,10 @@ pub(crate) struct AsyncDialogs {
     pub(crate) project_open_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
     pub(crate) project_save_receiver: Option<Mutex<mpsc::Receiver<Option<PathBuf>>>>,
     pub(crate) save_size: [u32; 2],
+    pub(crate) save_background: ExportBackground,
+    pub(crate) save_background_color: [u8; 3],
+    pub(crate) save_view_scale: f32,
+    pub(crate) save_layout: ExportLayout,
 }
 
 #[derive(Resource, Default)]
@@ -927,6 +1001,16 @@ pub(crate) struct ExportState {
     pub(crate) stage: Option<ExportStage>,
     pub(crate) capturing: bool,
     pub(crate) message: Option<String>,
+    pub(crate) preview_open: bool,
+    pub(crate) preview: Option<ExportPreview>,
+}
+
+pub(crate) struct ExportPreview {
+    pub(crate) image: Handle<Image>,
+    pub(crate) texture_id: egui::TextureId,
+    pub(crate) camera: Entity,
+    pub(crate) overlay_cameras: Vec<Entity>,
+    pub(crate) fingerprint: String,
 }
 
 #[derive(Resource, Default)]
@@ -940,16 +1024,37 @@ pub(crate) struct LegendPreview {
     pub(crate) _image: Handle<Image>,
 }
 
+#[derive(Resource)]
+pub(crate) struct AxisOverlay {
+    pub(crate) image: Handle<Image>,
+    pub(crate) texture_id: egui::TextureId,
+}
+
 pub(crate) struct ExportRequest {
     pub(crate) path: PathBuf,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) background: ExportBackground,
+    pub(crate) background_color: [u8; 3],
+    pub(crate) view_scale: f32,
+    pub(crate) layout: ExportLayout,
 }
 
 pub(crate) struct ExportStage {
     pub(crate) image: Handle<Image>,
     pub(crate) camera: Entity,
-    pub(crate) background_camera: Entity,
+    pub(crate) overlay_cameras: Vec<Entity>,
+    pub(crate) layout: ExportLayout,
+    pub(crate) symbols: Vec<String>,
+    pub(crate) legend_colors: Vec<[u8; 3]>,
+    pub(crate) axis_colors: [[u8; 3]; 3],
+    pub(crate) axis_vectors: [Vec3; 3],
+    pub(crate) axis_camera_rotation: Quat,
+    pub(crate) axis_label_size: f32,
+    pub(crate) axis_label_bold: bool,
+    pub(crate) legend_label_bold: bool,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub(crate) path: PathBuf,
     pub(crate) frames_remaining: u8,
 }

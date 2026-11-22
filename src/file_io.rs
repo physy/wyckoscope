@@ -79,11 +79,22 @@ pub(crate) fn request_open_dialog(dialogs: &mut AsyncDialogs) {
         .detach();
 }
 
-pub(crate) fn request_save_dialog(dialogs: &mut AsyncDialogs, size: [u32; 2]) {
+pub(crate) fn request_save_dialog(
+    dialogs: &mut AsyncDialogs,
+    size: [u32; 2],
+    background: ExportBackground,
+    background_color: [u8; 3],
+    view_scale: f32,
+    layout: ExportLayout,
+) {
     if dialogs.save_receiver.is_some() {
         return;
     }
     dialogs.save_size = size;
+    dialogs.save_background = background;
+    dialogs.save_background_color = background_color;
+    dialogs.save_view_scale = view_scale;
+    dialogs.save_layout = layout;
     let (sender, receiver) = mpsc::channel();
     dialogs.save_receiver = Some(Mutex::new(receiver));
     IoTaskPool::get()
@@ -180,6 +191,10 @@ pub(crate) fn poll_async_dialogs(
                 path,
                 width: dialogs.save_size[0],
                 height: dialogs.save_size[1],
+                background: dialogs.save_background,
+                background_color: dialogs.save_background_color,
+                view_scale: dialogs.save_view_scale,
+                layout: dialogs.save_layout.clone(),
             });
             export.message = Some("Preparing high-resolution render…".to_string());
         }

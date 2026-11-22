@@ -6,7 +6,7 @@ use bevy::{
 use bevy_egui::input::EguiWantsInput;
 
 use crate::{
-    AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, RENDER_TAB_BAR_HEIGHT,
+    RENDER_TAB_BAR_HEIGHT,
     scene::{AtomPickable, atoms_are_bonded, crystal_to_world},
     state::*,
 };
@@ -193,27 +193,16 @@ pub(crate) fn update_camera_viewports(
             Without<InterfaceCamera>,
         ),
     >,
-    mut axis_camera: Single<
-        &mut Camera,
-        (
-            With<OrientationAxisCamera>,
-            Without<OrbitCamera>,
-            Without<BackgroundCamera>,
-            Without<InterfaceCamera>,
-        ),
-    >,
 ) {
     let physical_size = window.resolution.physical_size();
     // During minimization and some resize transitions winit briefly reports a
     // zero-sized surface. A 1×1 viewport is not valid for that target either,
-    // so disable every 3D camera until the surface has a real extent again.
+    // so disable the window cameras until the surface has a real extent again.
     if physical_size.x == 0 || physical_size.y == 0 {
         main_camera.is_active = false;
         main_camera.viewport = None;
         background_camera.is_active = false;
         background_camera.viewport = None;
-        axis_camera.is_active = false;
-        axis_camera.viewport = None;
         return;
     }
 
@@ -235,33 +224,6 @@ pub(crate) fn update_camera_viewports(
     };
     main_camera.viewport = Some(render_viewport.clone());
     background_camera.viewport = Some(render_viewport);
-
-    let margin = (AXIS_VIEW_MARGIN * scale_factor).round() as u32;
-    let available_axis_width = render_size.x.saturating_sub(margin.saturating_mul(2));
-    let available_axis_height = render_size.y.saturating_sub(margin.saturating_mul(2));
-    if available_axis_width == 0 || available_axis_height == 0 {
-        axis_camera.is_active = false;
-        axis_camera.viewport = None;
-        return;
-    }
-
-    axis_camera.is_active = true;
-    let desired_size = (AXIS_VIEW_SIZE * scale_factor).round() as u32;
-    let axis_size = desired_size
-        .min(available_axis_width)
-        .min(available_axis_height)
-        .max(1);
-    axis_camera.viewport = Some(Viewport {
-        physical_position: UVec2::new(
-            render_x.saturating_add(margin),
-            render_y
-                .saturating_add(render_size.y)
-                .saturating_sub(margin)
-                .saturating_sub(axis_size),
-        ),
-        physical_size: UVec2::splat(axis_size),
-        ..default()
-    });
 }
 
 #[allow(clippy::type_complexity)]
