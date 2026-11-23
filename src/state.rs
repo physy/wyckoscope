@@ -1010,6 +1010,8 @@ pub(crate) struct ExportPreview {
     pub(crate) texture_id: egui::TextureId,
     pub(crate) camera: Entity,
     pub(crate) overlay_cameras: Vec<Entity>,
+    pub(crate) object_labels: Vec<ExportObjectLabel>,
+    pub(crate) size: [u32; 2],
     pub(crate) fingerprint: String,
 }
 
@@ -1053,10 +1055,24 @@ pub(crate) struct ExportStage {
     pub(crate) axis_label_size: f32,
     pub(crate) axis_label_bold: bool,
     pub(crate) legend_label_bold: bool,
+    pub(crate) object_labels: Vec<ExportObjectLabel>,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) path: PathBuf,
     pub(crate) frames_remaining: u8,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExportObjectLabel {
+    /// Pixel coordinates in the export camera's target.
+    pub(crate) position: Vec2,
+    pub(crate) text: String,
+    pub(crate) font_size: f32,
+    pub(crate) text_color: [u8; 3],
+    pub(crate) background: Option<[u8; 4]>,
+    pub(crate) outline: Option<([u8; 3], f32)>,
+    /// Scale from viewport points to export pixels, used by frame padding.
+    pub(crate) ui_scale: f32,
 }
 
 #[derive(Component)]

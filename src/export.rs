@@ -12,7 +12,10 @@ use bevy::{
 use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 
 use crate::{
-    scene::{crystal_to_world, default_appearance, projected_axis_label_centers},
+    scene::{
+        crystal_to_world, default_appearance, measurement_label, projected_axis_label_centers,
+        scene_object_position,
+    },
     state::*,
 };
 
@@ -31,6 +34,7 @@ pub(crate) fn process_export(
             &DebandDither,
             &Exposure,
             &OrbitCamera,
+            &Camera,
         ),
         With<OrbitCamera>,
     >,
@@ -51,7 +55,7 @@ pub(crate) fn process_export(
         ((1024.0 * preview_aspect).round().max(1.0) as u32, 1024)
     };
     let preview_fingerprint = format!(
-        "{}x{}|{:?}|{:?}|{:?}|{:?}|{:.3}|{:?}|{:?}|{:?}",
+        "{}x{}|{:?}|{:?}|{:?}|{:?}|{:.3}|{:?}|{:?}|{:?}|{}|{:?}|{:?}",
         preview_width,
         preview_height,
         settings.export_background,
@@ -62,6 +66,9 @@ pub(crate) fn process_export(
         symbols,
         main_camera.0,
         axis_camera.0,
+        settings.show_scene_objects,
+        settings.scene_objects,
+        state.structure.cell.vectors,
     );
     if export
         .preview
@@ -84,9 +91,11 @@ pub(crate) fn process_export(
             TextureFormat::Rgba8UnormSrgb,
             None,
         ));
-        let (transform, projection, tonemapping, deband_dither, exposure, orbit) = *main_camera;
+        let (transform, projection, tonemapping, deband_dither, exposure, orbit, source_camera) =
+            *main_camera;
         let mut transform = *transform;
         let mut projection = projection.clone();
+        projection.update(width as f32, height as f32);
         apply_export_view_scale(&mut projection, settings.export_view_scale);
         apply_export_view_offset(
             &mut transform,
@@ -94,6 +103,15 @@ pub(crate) fn process_export(
             orbit,
             settings.export_layout.crystal_offset,
             preview_aspect,
+        );
+        let object_labels = collect_export_object_labels(
+            &state,
+            &settings,
+            &transform,
+            &projection,
+            width,
+            height,
+            source_view_height(source_camera),
         );
         let background = match settings.export_background {
             ExportBackground::Viewport => Color::srgb_u8(
@@ -136,6 +154,8 @@ pub(crate) fn process_export(
             texture_id,
             camera,
             overlay_cameras,
+            object_labels,
+            size: [width, height],
             fingerprint: preview_fingerprint,
         });
     }
@@ -149,9 +169,11 @@ pub(crate) fn process_export(
             Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         let image_handle = images.add(image);
-        let (transform, projection, tonemapping, deband_dither, exposure, orbit) = *main_camera;
+        let (transform, projection, tonemapping, deband_dither, exposure, orbit, source_camera) =
+            *main_camera;
         let mut transform = *transform;
         let mut export_projection = projection.clone();
+        export_projection.update(width as f32, height as f32);
         apply_export_view_scale(&mut export_projection, request.view_scale);
         apply_export_view_offset(
             &mut transform,
@@ -159,6 +181,15 @@ pub(crate) fn process_export(
             orbit,
             request.layout.crystal_offset,
             width as f32 / height as f32,
+        );
+        let object_labels = collect_export_object_labels(
+            &state,
+            &settings,
+            &transform,
+            &export_projection,
+            width,
+            height,
+            source_view_height(source_camera),
         );
         let background = match request.background {
             ExportBackground::Viewport => Color::srgb_u8(
@@ -234,6 +265,7 @@ pub(crate) fn process_export(
             axis_label_size: settings.axis_label_size,
             axis_label_bold: settings.axis_label_bold,
             legend_label_bold: settings.element_legend_label_bold,
+            object_labels,
             width,
             height,
             path: request.path,
@@ -265,6 +297,7 @@ pub(crate) fn process_export(
         let axis_label_size = stage.axis_label_size;
         let axis_label_bold = stage.axis_label_bold;
         let legend_label_bold = stage.legend_label_bold;
+        let object_labels = stage.object_labels;
         let width = stage.width;
         let height = stage.height;
         commands.spawn(Screenshot::image(stage.image)).observe(
@@ -292,6 +325,7 @@ pub(crate) fn process_export(
                             axis_label_size,
                             axis_label_bold,
                             legend_label_bold,
+                            &object_labels,
                         );
                         image.save(&path).map_err(|error| error.to_string())
                     });
@@ -314,7 +348,7 @@ pub(crate) fn process_export(
 }
 
 fn apply_export_view_scale(projection: &mut Projection, view_scale: f32) {
-    let view_scale = view_scale.clamp(1.0, 2.5);
+    let view_scale = view_scale.clamp(1.0, 5.0);
     match projection {
         Projection::Perspective(projection) => {
             let half_fov = ((projection.fov * 0.5).tan() / view_scale).atan();
@@ -351,6 +385,151 @@ fn apply_export_view_offset(
     let up = transform.rotation * Vec3::Y;
     transform.translation +=
         -right * offset[0] * view_height * aspect + up * offset[1] * view_height;
+}
+
+fn source_view_height(camera: &Camera) -> f32 {
+    camera
+        .logical_viewport_size()
+        .map_or(900.0, |size| size.y.max(1.0))
+}
+
+fn collect_export_object_labels(
+    state: &AppState,
+    settings: &VisualSettings,
+    camera_transform: &Transform,
+    projection: &Projection,
+    width: u32,
+    height: u32,
+    source_view_height: f32,
+) -> Vec<ExportObjectLabel> {
+    if !settings.show_scene_objects {
+        return Vec::new();
+    }
+    let supercell = settings.supercell.map(|value| value.max(1));
+    let total_vector = state.structure.cell.vectors[0] * supercell[0] as f32
+        + state.structure.cell.vectors[1] * supercell[1] as f32
+        + state.structure.cell.vectors[2] * supercell[2] as f32;
+    let crystal_center = crystal_to_world(total_vector * 0.5);
+    let ui_scale = height as f32 / source_view_height.max(1.0);
+
+    settings
+        .scene_objects
+        .objects
+        .iter()
+        .filter(|object| object.visible)
+        .filter_map(|object| {
+            let (
+                text,
+                world_position,
+                font_size,
+                show_background,
+                background_color,
+                background_opacity,
+                show_outline,
+                outline_color,
+                outline_width,
+            ) = match &object.kind {
+                SceneObjectKind::Label {
+                    text,
+                    font_size,
+                    show_background,
+                    background_color,
+                    background_opacity,
+                    show_outline,
+                    outline_color,
+                    outline_width,
+                } => (
+                    text.clone(),
+                    scene_object_position(object, &state.structure, crystal_center),
+                    *font_size,
+                    *show_background,
+                    *background_color,
+                    *background_opacity,
+                    *show_outline,
+                    *outline_color,
+                    *outline_width,
+                ),
+                SceneObjectKind::Measurement {
+                    kind,
+                    points,
+                    label_size,
+                    show_background,
+                    background_color,
+                    background_opacity,
+                    show_outline,
+                    outline_color,
+                    outline_width,
+                    ..
+                } => {
+                    let (text, position) =
+                        measurement_label(*kind, points, &state.structure.cell, crystal_center)?;
+                    (
+                        text,
+                        position,
+                        *label_size,
+                        *show_background,
+                        *background_color,
+                        *background_opacity,
+                        *show_outline,
+                        *outline_color,
+                        *outline_width,
+                    )
+                }
+                _ => return None,
+            };
+            let position = project_world_to_export(
+                world_position,
+                camera_transform,
+                projection,
+                width,
+                height,
+            )?;
+            let background = show_background.then(|| {
+                [
+                    background_color[0],
+                    background_color[1],
+                    background_color[2],
+                    (background_opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+                ]
+            });
+            let outline = show_outline.then_some((outline_color, outline_width * ui_scale));
+            Some(ExportObjectLabel {
+                position,
+                text,
+                font_size: font_size * ui_scale,
+                text_color: object.color,
+                background,
+                outline,
+                ui_scale,
+            })
+        })
+        .collect()
+}
+
+fn project_world_to_export(
+    world_position: Vec3,
+    camera_transform: &Transform,
+    projection: &Projection,
+    width: u32,
+    height: u32,
+) -> Option<Vec2> {
+    let view_from_world = camera_transform.to_matrix().inverse();
+    let view_position = view_from_world.mul_vec4(world_position.extend(1.0));
+    let clip_position = projection.get_clip_from_view().mul_vec4(view_position);
+    if !clip_position.is_finite() || clip_position.w <= f32::EPSILON {
+        return None;
+    }
+    let ndc = clip_position.truncate() / clip_position.w;
+    if !(0.0..=1.0).contains(&ndc.z)
+        || !(-1.0..=1.0).contains(&ndc.x)
+        || !(-1.0..=1.0).contains(&ndc.y)
+    {
+        return None;
+    }
+    Some(Vec2::new(
+        (ndc.x + 1.0) * 0.5 * width as f32,
+        (1.0 - ndc.y) * 0.5 * height as f32,
+    ))
 }
 
 fn despawn_preview(
@@ -536,6 +715,7 @@ fn composite_export_labels(
     axis_label_size: f32,
     axis_label_bold: bool,
     legend_label_bold: bool,
+    object_labels: &[ExportObjectLabel],
 ) {
     let base = width.min(height) as f32;
     if layout.axis.visible && layout.axis.labels_visible {
@@ -575,6 +755,95 @@ fn composite_export_labels(
                 color,
                 legend_label_bold,
             );
+        }
+    }
+    for label in object_labels {
+        draw_export_object_label(image, label);
+    }
+}
+
+fn draw_export_object_label(image: &mut image::RgbaImage, label: &ExportObjectLabel) {
+    let font = export_font(false);
+    let text_width = export_text_width(&font, &label.text, label.font_size);
+    let text_height = export_font_row_height(&font, label.font_size);
+    let x = label.position.x - text_width * 0.5;
+    let y = label.position.y - text_height * 0.5;
+
+    if let Some(background) = label.background {
+        let padding_x = 4.0 * label.ui_scale;
+        let padding_y = 2.0 * label.ui_scale;
+        draw_rounded_rect(
+            image,
+            x - padding_x,
+            y - padding_y,
+            x + text_width + padding_x,
+            y + text_height + padding_y,
+            2.0 * label.ui_scale,
+            background,
+        );
+    }
+    if let Some((color, radius)) = label.outline {
+        let radius = radius.max(0.0);
+        let extent = (radius + 0.5).ceil() as i32;
+        for dy in -extent..=extent {
+            for dx in -extent..=extent {
+                if dx == 0 && dy == 0 || (dx * dx + dy * dy) as f32 > (radius + 0.5).powi(2) {
+                    continue;
+                }
+                draw_text(
+                    image,
+                    &label.text,
+                    x + dx as f32,
+                    y + dy as f32,
+                    label.font_size,
+                    [color[0], color[1], color[2], 255],
+                    false,
+                );
+            }
+        }
+    }
+    draw_text(
+        image,
+        &label.text,
+        x,
+        y,
+        label.font_size,
+        [
+            label.text_color[0],
+            label.text_color[1],
+            label.text_color[2],
+            255,
+        ],
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rounded_rect(
+    image: &mut image::RgbaImage,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+    color: [u8; 4],
+) {
+    let radius = radius.max(0.0).min((right - left).min(bottom - top) * 0.5);
+    let min_x = left.floor().max(0.0) as u32;
+    let min_y = top.floor().max(0.0) as u32;
+    let max_x = right.ceil().min(image.width() as f32) as u32;
+    let max_y = bottom.ceil().min(image.height() as f32) as u32;
+    for py in min_y..max_y {
+        for px in min_x..max_x {
+            let point = Vec2::new(px as f32 + 0.5, py as f32 + 0.5);
+            let nearest = Vec2::new(
+                point.x.clamp(left + radius, right - radius),
+                point.y.clamp(top + radius, bottom - radius),
+            );
+            let coverage = (radius + 0.5 - point.distance(nearest)).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend_pixel(image.get_pixel_mut(px, py), color, coverage);
+            }
         }
     }
 }
@@ -698,19 +967,28 @@ fn draw_text(
                     return;
                 }
                 let pixel = image.get_pixel_mut(px as u32, py as u32);
-                let alpha = coverage * color[3] as f32 / 255.0;
-                for channel in 0..3 {
-                    pixel[channel] = (color[channel] as f32 * alpha
-                        + pixel[channel] as f32 * (1.0 - alpha))
-                        .round() as u8;
-                }
-                pixel[3] =
-                    ((alpha + pixel[3] as f32 / 255.0 * (1.0 - alpha)) * 255.0).round() as u8;
+                blend_pixel(pixel, color, coverage);
             });
         }
         cursor.x += font.h_advance_unscaled(glyph_id) * scale_factor;
         previous = Some(glyph_id);
     }
+}
+
+fn blend_pixel(pixel: &mut image::Rgba<u8>, color: [u8; 4], coverage: f32) {
+    let source_alpha = coverage.clamp(0.0, 1.0) * color[3] as f32 / 255.0;
+    let destination_alpha = pixel[3] as f32 / 255.0;
+    let output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha);
+    if output_alpha <= f32::EPSILON {
+        *pixel = image::Rgba([0, 0, 0, 0]);
+        return;
+    }
+    for channel in 0..3 {
+        let premultiplied = color[channel] as f32 * source_alpha
+            + pixel[channel] as f32 * destination_alpha * (1.0 - source_alpha);
+        pixel[channel] = (premultiplied / output_alpha).round().clamp(0.0, 255.0) as u8;
+    }
+    pixel[3] = (output_alpha * 255.0).round() as u8;
 }
 
 fn export_font(bold: bool) -> FontRef<'static> {
@@ -769,5 +1047,22 @@ mod tests {
         let mut image = image::RgbaImage::from_pixel(200, 80, image::Rgba([0, 0, 0, 0]));
         draw_outlined_text(&mut image, "Fe", 10.0, 10.0, 28.0, [255, 0, 0], true);
         assert!(image.pixels().any(|pixel| pixel[3] != 0));
+    }
+
+    #[test]
+    fn export_projection_maps_the_camera_target_to_image_center() {
+        let transform = Transform::from_xyz(0.0, 0.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let mut projection = Projection::Perspective(PerspectiveProjection::default());
+        projection.update(800.0, 600.0);
+
+        let center = project_world_to_export(Vec3::ZERO, &transform, &projection, 800, 600)
+            .expect("camera target should be visible");
+
+        assert!((center.x - 400.0).abs() < 0.01);
+        assert!((center.y - 300.0).abs() < 0.01);
+        assert!(
+            project_world_to_export(Vec3::new(0.0, 0.0, 20.0), &transform, &projection, 800, 600,)
+                .is_none()
+        );
     }
 }

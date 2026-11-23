@@ -3150,6 +3150,7 @@ fn export_preview_modal(
                 settings,
                 overrides,
                 &symbols,
+                export.preview.as_ref(),
             );
             ui.painter().rect_stroke(
                 rect,
@@ -3359,6 +3360,7 @@ fn draw_export_preview_images(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_export_preview_labels(
     ui: &egui::Ui,
     canvas: egui::Rect,
@@ -3367,6 +3369,7 @@ fn draw_export_preview_labels(
     settings: &VisualSettings,
     overrides: &ElementOverrides,
     symbols: &[String],
+    preview: Option<&ExportPreview>,
 ) {
     let painter = ui.painter();
     let base = canvas.width().min(canvas.height());
@@ -3457,6 +3460,61 @@ fn draw_export_preview_labels(
                 settings.element_legend_label_bold,
             );
         }
+    }
+    if let Some(preview) = preview {
+        draw_export_preview_object_labels(ui, canvas, preview);
+    }
+}
+
+fn draw_export_preview_object_labels(ui: &egui::Ui, canvas: egui::Rect, preview: &ExportPreview) {
+    let scale = canvas.height() / preview.size[1].max(1) as f32;
+    let x_scale = canvas.width() / preview.size[0].max(1) as f32;
+    let painter = ui.painter();
+    for label in &preview.object_labels {
+        let center = canvas.min + egui::vec2(label.position.x * x_scale, label.position.y * scale);
+        let font_size = (label.font_size * scale).max(1.0);
+        let font = egui::FontId::proportional(font_size);
+        let text_color = egui::Color32::from_rgb(
+            label.text_color[0],
+            label.text_color[1],
+            label.text_color[2],
+        );
+        let galley = painter.layout_no_wrap(label.text.clone(), font.clone(), text_color);
+        let text_position = center - galley.size() * 0.5;
+        if let Some(background) = label.background {
+            let padding = egui::vec2(4.0 * label.ui_scale * x_scale, 2.0 * label.ui_scale * scale);
+            painter.rect_filled(
+                egui::Rect::from_min_size(text_position, galley.size()).expand2(padding),
+                2.0 * label.ui_scale * scale,
+                egui::Color32::from_rgba_unmultiplied(
+                    background[0],
+                    background[1],
+                    background[2],
+                    background[3],
+                ),
+            );
+        }
+        if let Some((outline_color, outline_width)) = label.outline {
+            let outline_color =
+                egui::Color32::from_rgb(outline_color[0], outline_color[1], outline_color[2]);
+            let radius = outline_width * scale;
+            let extent = (radius + 0.5).ceil() as i32;
+            for dy in -extent..=extent {
+                for dx in -extent..=extent {
+                    if dx == 0 && dy == 0 || (dx * dx + dy * dy) as f32 > (radius + 0.5).powi(2) {
+                        continue;
+                    }
+                    painter.text(
+                        center + egui::vec2(dx as f32, dy as f32),
+                        egui::Align2::CENTER_CENTER,
+                        &label.text,
+                        font.clone(),
+                        outline_color,
+                    );
+                }
+            }
+        }
+        painter.galley(text_position, galley, text_color);
     }
 }
 
