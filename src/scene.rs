@@ -4,6 +4,12 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::{CameraOutputMode, Exposure, RenderTarget, ScalingMode, visibility::RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
+    gizmos::{
+        GizmoAsset,
+        config::{GizmoConfigGroup, GizmoConfigStore, GizmoLineConfig, GizmoLineStyle},
+        prelude::Gizmos,
+        retained::Gizmo,
+    },
     mesh::{Indices, PrimitiveTopology},
     pbr::wireframe::{Wireframe, WireframeColor},
     prelude::*,
@@ -21,6 +27,12 @@ const BOUNDARY_EPSILON: f32 = 1.0e-4;
 pub(crate) const LEGEND_RENDER_LAYER: usize = 2;
 const LEGEND_ICON_SIZE: u32 = 96;
 const AXIS_OVERLAY_SIZE: u32 = 512;
+
+/// Dedicated screen-space line configuration for the crystallographic cell.
+/// Bevy expands these lines after projection, so their width is in pixels.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+#[reflect(Default)]
+pub(crate) struct UnitCellGizmoGroup;
 
 /// Marker for the custom meshes used to visualize partial or mixed occupancy.
 /// Unlike a plain sphere, a sector has an observable orientation.
@@ -545,6 +557,84 @@ fn occupancy_sector_rotation_for_view(toward_camera: Vec3, camera_up: Vec3) -> O
     })
 }
 
+/// Synchronize the dedicated screen-space line configuration from the UI.
+///
+/// This must be separate from `Gizmos<UnitCellGizmoGroup>` access: Gizmos
+/// reads the same config store internally.
+pub(crate) fn sync_unit_cell_gizmo_config(
+    mut config_store: ResMut<GizmoConfigStore>,
+    settings: Res<VisualSettings>,
+) {
+    let (config, _) = config_store.config_mut::<UnitCellGizmoGroup>();
+    config.line.width = settings.unit_cell_line_width.clamp(0.25, 8.0);
+    config.line.perspective = false;
+    config.line.style = match settings.unit_cell_line_style {
+        CellLineStyle::Solid => GizmoLineStyle::Solid,
+        CellLineStyle::Dotted => GizmoLineStyle::Dotted,
+        CellLineStyle::Dashed => GizmoLineStyle::Dashed {
+            gap_scale: 0.60,
+            line_scale: 1.00,
+        },
+    };
+    config.depth_bias = 0.0;
+}
+
+/// Draw unit-cell edges through Bevy's screen-space gizmo renderer.
+///
+/// The renderer expands line segments after projection, making `width` a
+/// physical-pixel value that remains stable during camera zoom and projection
+/// changes. Gizmos retain depth testing, so opaque atoms still occlude them.
+pub(crate) fn draw_unit_cell_lines(
+    mut gizmos: Gizmos<UnitCellGizmoGroup>,
+    state: Res<AppState>,
+    settings: Res<VisualSettings>,
+) {
+    if settings.unit_cell_display == UnitCellDisplay::Hidden {
+        return;
+    }
+
+    let supercell = settings.supercell.map(|value| value.max(1));
+    let primitive_vectors = state.structure.cell.vectors.map(crystal_to_world);
+    let total_vector = primitive_vectors[0] * supercell[0] as f32
+        + primitive_vectors[1] * supercell[1] as f32
+        + primitive_vectors[2] * supercell[2] as f32;
+    let center = total_vector * 0.5;
+    let color = Color::srgb_u8(
+        settings.unit_cell_color[0],
+        settings.unit_cell_color[1],
+        settings.unit_cell_color[2],
+    );
+
+    let mut draw_edge = |from: Vec3, to: Vec3| gizmos.line(from - center, to - center, color);
+    match settings.unit_cell_display {
+        UnitCellDisplay::Hidden => {}
+        UnitCellDisplay::Single => {
+            for (from, to) in cell_edges(primitive_vectors) {
+                draw_edge(from, to);
+            }
+        }
+        UnitCellDisplay::All => {
+            let mut drawn_edges = HashSet::new();
+            for ix in 0..supercell[0] {
+                for iy in 0..supercell[1] {
+                    for iz in 0..supercell[2] {
+                        let offset = primitive_vectors[0] * ix as f32
+                            + primitive_vectors[1] * iy as f32
+                            + primitive_vectors[2] * iz as f32;
+                        for (from, to) in cell_edges(primitive_vectors) {
+                            let from = from + offset;
+                            let to = to + offset;
+                            if drawn_edges.insert(cell_edge_key(from, to)) {
+                                draw_edge(from, to);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn rebuild_scene(
     mut commands: Commands,
@@ -557,6 +647,7 @@ pub(crate) fn rebuild_scene(
     old_visuals: Query<Entity, With<CrystalVisual>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
     mut camera: Single<(&mut OrbitCamera, &mut Transform), With<OrbitCamera>>,
 ) {
     if !dirty.rebuild {
@@ -612,15 +703,6 @@ pub(crate) fn rebuild_scene(
         },
         unlit: true,
         cull_mode: Some(Face::Front),
-        ..default()
-    });
-    let cell_material = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(
-            settings.unit_cell_color[0],
-            settings.unit_cell_color[1],
-            settings.unit_cell_color[2],
-        ),
-        unlit: true,
         ..default()
     });
     let structure = &state.structure;
@@ -769,25 +851,65 @@ pub(crate) fn rebuild_scene(
                 .entry(atom.element.clone())
                 .or_insert_with(|| create_atom_material(&mut materials, style, &settings));
         }
+        let mut bond_line_assets: HashMap<usize, GizmoAsset> = HashMap::new();
         for &(a, b) in &bonds {
             let first = &render_atoms[a];
             let second = &render_atoms[b];
-            let Some(rule) = displayed_bond_rule(first, second, &settings) else {
+            let Some((rule_index, rule)) = displayed_bond_rule(first, second, &settings) else {
                 continue;
             };
-            spawn_bond(
-                &mut commands,
-                &mut materials,
-                &cylinder_mesh,
-                &sphere_mesh,
-                atom_materials[&first.element].clone(),
-                atom_materials[&second.element].clone(),
-                resolved_style(&first.element, &overrides, settings.element_color_scheme).color,
-                resolved_style(&second.element, &overrides, settings.element_color_scheme).color,
-                first.position,
-                second.position,
-                rule,
-            );
+            match rule.bond_style {
+                BondStyle::UnicolorCylinder | BondStyle::BicolorCylinder => {
+                    spawn_cylinder_bond(
+                        &mut commands,
+                        &mut materials,
+                        &cylinder_mesh,
+                        atom_materials[&first.element].clone(),
+                        atom_materials[&second.element].clone(),
+                        first.position,
+                        second.position,
+                        rule,
+                    );
+                }
+                BondStyle::ColorLine | BondStyle::DottedLine | BondStyle::DashedLine => {
+                    bond_line_assets.entry(rule_index).or_default().line(
+                        first.position,
+                        second.position,
+                        Color::srgb_u8(rule.bond_color[0], rule.bond_color[1], rule.bond_color[2]),
+                    );
+                }
+                BondStyle::GradientLine => {
+                    let first_color =
+                        resolved_style(&first.element, &overrides, settings.element_color_scheme)
+                            .color;
+                    let second_color =
+                        resolved_style(&second.element, &overrides, settings.element_color_scheme)
+                            .color;
+                    bond_line_assets
+                        .entry(rule_index)
+                        .or_default()
+                        .line_gradient(first.position, second.position, first_color, second_color);
+                }
+            }
+        }
+        for (rule_index, asset) in bond_line_assets {
+            let rule = &settings.bond_rules[rule_index];
+            let style = bond_gizmo_line_style(rule.bond_style)
+                .expect("only line bond styles create a retained gizmo");
+            commands.spawn((
+                Name::new(format!("Bond line rule {}", rule_index + 1)),
+                Gizmo {
+                    handle: gizmo_assets.add(asset),
+                    line_config: GizmoLineConfig {
+                        width: rule.bond_pixel_width.clamp(0.5, 8.0),
+                        perspective: false,
+                        style,
+                        ..default()
+                    },
+                    depth_bias: 0.0,
+                },
+                CrystalVisual,
+            ));
         }
     }
 
@@ -802,24 +924,8 @@ pub(crate) fn rebuild_scene(
             adjacency[first].push(second);
             adjacency[second].push(first);
         }
-        let edge_material = settings.polyhedron_show_edges.then(|| {
-            materials.add(StandardMaterial {
-                base_color: Color::srgb_u8(
-                    settings.polyhedron_edge_color[0],
-                    settings.polyhedron_edge_color[1],
-                    settings.polyhedron_edge_color[2],
-                ),
-                emissive: Color::srgb_u8(
-                    settings.polyhedron_edge_color[0],
-                    settings.polyhedron_edge_color[1],
-                    settings.polyhedron_edge_color[2],
-                )
-                .to_linear()
-                    * 0.08,
-                unlit: true,
-                ..default()
-            })
-        });
+        let mut polyhedron_edges = settings.polyhedron_show_edges.then(GizmoAsset::default);
+        let mut has_polyhedron_edges = false;
         for (rule_index, rule) in settings.bond_rules.iter().enumerate() {
             if !rule.enabled || !rule.show_polyhedra {
                 continue;
@@ -848,20 +954,38 @@ pub(crate) fn rebuild_scene(
                         MeshMaterial3d(polyhedron_material.clone()),
                         CrystalVisual,
                     ));
-                    if let Some(edge_material) = &edge_material {
+                    if let Some(edges) = &mut polyhedron_edges {
                         for (start, end) in polyhedron.edges {
-                            spawn_cylinder_between(
-                                &mut commands,
-                                cylinder_mesh.clone(),
-                                edge_material.clone(),
+                            edges.line(
                                 start,
                                 end,
-                                settings.polyhedron_edge_radius,
+                                Color::srgb_u8(
+                                    settings.polyhedron_edge_color[0],
+                                    settings.polyhedron_edge_color[1],
+                                    settings.polyhedron_edge_color[2],
+                                ),
                             );
+                            has_polyhedron_edges = true;
                         }
                     }
                 }
             }
+        }
+        if has_polyhedron_edges && let Some(asset) = polyhedron_edges {
+            commands.spawn((
+                Name::new("Polyhedron edges"),
+                Gizmo {
+                    handle: gizmo_assets.add(asset),
+                    line_config: GizmoLineConfig {
+                        width: settings.polyhedron_edge_radius.clamp(0.5, 8.0),
+                        perspective: false,
+                        style: GizmoLineStyle::Solid,
+                        ..default()
+                    },
+                    depth_bias: 0.0,
+                },
+                CrystalVisual,
+            ));
         }
     }
 
@@ -919,53 +1043,6 @@ pub(crate) fn rebuild_scene(
         crystal_to_world(structure.cell.vectors[1] * supercell[1] as f32),
         crystal_to_world(structure.cell.vectors[2] * supercell[2] as f32),
     ];
-    let primitive_vectors = state.structure.cell.vectors.map(crystal_to_world);
-    match settings.unit_cell_display {
-        UnitCellDisplay::Hidden => {}
-        UnitCellDisplay::Single => {
-            for (from, to) in cell_edges(primitive_vectors) {
-                spawn_cell_edge(
-                    &mut commands,
-                    cylinder_mesh.clone(),
-                    sphere_mesh.clone(),
-                    cell_material.clone(),
-                    from - center,
-                    to - center,
-                    settings.unit_cell_line_style,
-                    settings.unit_cell_line_width,
-                );
-            }
-        }
-        UnitCellDisplay::All => {
-            let mut drawn_edges = HashSet::new();
-            for ix in 0..supercell[0] {
-                for iy in 0..supercell[1] {
-                    for iz in 0..supercell[2] {
-                        let offset = primitive_vectors[0] * ix as f32
-                            + primitive_vectors[1] * iy as f32
-                            + primitive_vectors[2] * iz as f32;
-                        for (from, to) in cell_edges(primitive_vectors) {
-                            let from = from + offset;
-                            let to = to + offset;
-                            if !drawn_edges.insert(cell_edge_key(from, to)) {
-                                continue;
-                            }
-                            spawn_cell_edge(
-                                &mut commands,
-                                cylinder_mesh.clone(),
-                                sphere_mesh.clone(),
-                                cell_material.clone(),
-                                from - center,
-                                to - center,
-                                settings.unit_cell_line_style,
-                                settings.unit_cell_line_width,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
     let extent = world_vectors
         .iter()
         .map(|value| value.length())
@@ -975,6 +1052,7 @@ pub(crate) fn rebuild_scene(
             &mut commands,
             &mut meshes,
             &mut materials,
+            &mut gizmo_assets,
             &settings.scene_objects.objects,
             structure,
             center,
@@ -998,6 +1076,7 @@ fn spawn_scene_objects(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    gizmo_assets: &mut Assets<GizmoAsset>,
     objects: &[SceneObject],
     structure: &CrystalStructure,
     crystal_center: Vec3,
@@ -1166,36 +1245,95 @@ fn spawn_scene_objects(
                     );
                 }
             }
-            SceneObjectKind::Line { start, end, radius } => {
+            SceneObjectKind::Line {
+                start,
+                end,
+                radius,
+                render_mode,
+                screen_width,
+            } => {
                 let start =
                     position + rotation * scene_object_vector(*start, object.anchor, structure);
                 let end = position + rotation * scene_object_vector(*end, object.anchor, structure);
-                spawn_cylinder_between(
-                    commands,
-                    cylinder_mesh.clone(),
-                    material(0.0, 0.35),
-                    start,
-                    end,
-                    *radius,
-                );
-            }
-            SceneObjectKind::Polyline { points, radius } => {
-                let line_material = material(0.0, 0.35);
-                for pair in points.windows(2) {
-                    let start = position
-                        + rotation * scene_object_vector(pair[0], object.anchor, structure);
-                    let end = position
-                        + rotation * scene_object_vector(pair[1], object.anchor, structure);
-                    spawn_cylinder_between(
+                match render_mode {
+                    SceneLineRenderMode::ThreeDimensional => spawn_cylinder_between(
                         commands,
                         cylinder_mesh.clone(),
-                        line_material.clone(),
+                        material(0.0, 0.35),
                         start,
                         end,
                         *radius,
-                    );
+                    ),
+                    SceneLineRenderMode::ScreenSpace => {
+                        let mut asset = GizmoAsset::default();
+                        asset.line(start, end, color);
+                        commands.spawn((
+                            Name::new(format!("Scene object · {}", object.name)),
+                            Gizmo {
+                                handle: gizmo_assets.add(asset),
+                                line_config: GizmoLineConfig {
+                                    width: screen_width.clamp(0.5, 32.0),
+                                    perspective: false,
+                                    style: GizmoLineStyle::Solid,
+                                    ..default()
+                                },
+                                depth_bias: 0.0,
+                            },
+                            CrystalVisual,
+                        ));
+                    }
                 }
             }
+            SceneObjectKind::Polyline {
+                points,
+                radius,
+                render_mode,
+                screen_width,
+            } => match render_mode {
+                SceneLineRenderMode::ThreeDimensional => {
+                    let line_material = material(0.0, 0.35);
+                    for pair in points.windows(2) {
+                        let start = position
+                            + rotation * scene_object_vector(pair[0], object.anchor, structure);
+                        let end = position
+                            + rotation * scene_object_vector(pair[1], object.anchor, structure);
+                        spawn_cylinder_between(
+                            commands,
+                            cylinder_mesh.clone(),
+                            line_material.clone(),
+                            start,
+                            end,
+                            *radius,
+                        );
+                    }
+                }
+                SceneLineRenderMode::ScreenSpace => {
+                    let mut asset = GizmoAsset::default();
+                    for pair in points.windows(2) {
+                        let start = position
+                            + rotation * scene_object_vector(pair[0], object.anchor, structure);
+                        let end = position
+                            + rotation * scene_object_vector(pair[1], object.anchor, structure);
+                        asset.line(start, end, color);
+                    }
+                    if points.len() >= 2 {
+                        commands.spawn((
+                            Name::new(format!("Scene object · {}", object.name)),
+                            Gizmo {
+                                handle: gizmo_assets.add(asset),
+                                line_config: GizmoLineConfig {
+                                    width: screen_width.clamp(0.5, 32.0),
+                                    perspective: false,
+                                    style: GizmoLineStyle::Solid,
+                                    ..default()
+                                },
+                                depth_bias: 0.0,
+                            },
+                            CrystalVisual,
+                        ));
+                    }
+                }
+            },
             SceneObjectKind::Measurement {
                 kind,
                 points,
@@ -2200,15 +2338,12 @@ fn spawn_cylinder_between(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_bond(
+fn spawn_cylinder_bond(
     commands: &mut Commands,
     materials: &mut Assets<StandardMaterial>,
     cylinder_mesh: &Handle<Mesh>,
-    sphere_mesh: &Handle<Mesh>,
     first_material: Handle<StandardMaterial>,
     second_material: Handle<StandardMaterial>,
-    first_color: Color,
-    second_color: Color,
     start: Vec3,
     end: Vec3,
     rule: &BondRule,
@@ -2221,7 +2356,6 @@ fn spawn_bond(
             ..default()
         })
     };
-    let line_radius = (rule.bond_pixel_width * 0.004).clamp(0.006, 0.050);
     match rule.bond_style {
         BondStyle::UnicolorCylinder => {
             spawn_cylinder_between(
@@ -2252,129 +2386,22 @@ fn spawn_bond(
                 rule.bond_radius,
             );
         }
-        BondStyle::ColorLine => {
-            spawn_cylinder_between(
-                commands,
-                cylinder_mesh.clone(),
-                solid_material(rule.bond_color, materials),
-                start,
-                end,
-                line_radius,
-            );
-        }
-        BondStyle::GradientLine => {
-            let first = first_color.to_srgba();
-            let second = second_color.to_srgba();
-            const SEGMENTS: usize = 10;
-            for segment in 0..SEGMENTS {
-                let from = segment as f32 / SEGMENTS as f32;
-                let to = (segment + 1) as f32 / SEGMENTS as f32;
-                let at = (from + to) * 0.5;
-                let color = Color::srgb(
-                    first.red + (second.red - first.red) * at,
-                    first.green + (second.green - first.green) * at,
-                    first.blue + (second.blue - first.blue) * at,
-                );
-                let material = materials.add(StandardMaterial {
-                    base_color: color,
-                    emissive: color.to_linear() * 0.04,
-                    perceptual_roughness: 0.32,
-                    ..default()
-                });
-                spawn_cylinder_between(
-                    commands,
-                    cylinder_mesh.clone(),
-                    material,
-                    start.lerp(end, from),
-                    start.lerp(end, to),
-                    line_radius,
-                );
-            }
-        }
-        BondStyle::DottedLine => {
-            let material = solid_material(rule.bond_color, materials);
-            let length = start.distance(end);
-            let count = (length / (line_radius * 7.0).max(0.14)).ceil().max(2.0) as usize;
-            for index in 0..=count {
-                commands.spawn((
-                    Mesh3d(sphere_mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(start.lerp(end, index as f32 / count as f32))
-                        .with_scale(Vec3::splat(line_radius * 1.55)),
-                    CrystalVisual,
-                ));
-            }
-        }
-        BondStyle::DashedLine => {
-            let material = solid_material(rule.bond_color, materials);
-            let length = start.distance(end);
-            let count = (length / (line_radius * 20.0).max(0.38)).ceil().max(1.0) as usize;
-            for index in 0..count {
-                let from = index as f32 / count as f32;
-                let to = (from + 0.62 / count as f32).min(1.0);
-                spawn_cylinder_between(
-                    commands,
-                    cylinder_mesh.clone(),
-                    material.clone(),
-                    start.lerp(end, from),
-                    start.lerp(end, to),
-                    line_radius,
-                );
-            }
-        }
+        BondStyle::ColorLine
+        | BondStyle::GradientLine
+        | BondStyle::DottedLine
+        | BondStyle::DashedLine => unreachable!("line styles are rendered as retained gizmos"),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_cell_edge(
-    commands: &mut Commands,
-    cylinder_mesh: Handle<Mesh>,
-    sphere_mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
-    start: Vec3,
-    end: Vec3,
-    style: CellLineStyle,
-    line_width: f32,
-) {
-    let radius = (0.026 * line_width).clamp(0.008, 0.20);
-    let direction = end - start;
-    let length = direction.length();
-    if length < 1.0e-5 {
-        return;
-    }
+fn bond_gizmo_line_style(style: BondStyle) -> Option<GizmoLineStyle> {
     match style {
-        CellLineStyle::Solid => {
-            spawn_cylinder_between(commands, cylinder_mesh, material, start, end, radius);
-        }
-        CellLineStyle::Dotted => {
-            let count = (length / (radius * 7.0).max(0.14)).ceil().max(2.0) as usize;
-            for index in 0..=count {
-                let fraction = index as f32 / count as f32;
-                commands.spawn((
-                    Mesh3d(sphere_mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(start.lerp(end, fraction))
-                        .with_scale(Vec3::splat(radius * 1.55)),
-                    CrystalVisual,
-                ));
-            }
-        }
-        CellLineStyle::Dashed => {
-            let count = (length / (radius * 20.0).max(0.38)).ceil().max(1.0) as usize;
-            let dash_span = 1.0 / count as f32;
-            for index in 0..count {
-                let from = index as f32 * dash_span;
-                let to = (from + dash_span * 0.62).min(1.0);
-                spawn_cylinder_between(
-                    commands,
-                    cylinder_mesh.clone(),
-                    material.clone(),
-                    start.lerp(end, from),
-                    start.lerp(end, to),
-                    radius,
-                );
-            }
-        }
+        BondStyle::ColorLine | BondStyle::GradientLine => Some(GizmoLineStyle::Solid),
+        BondStyle::DottedLine => Some(GizmoLineStyle::Dotted),
+        BondStyle::DashedLine => Some(GizmoLineStyle::Dashed {
+            gap_scale: 0.60,
+            line_scale: 1.00,
+        }),
+        BondStyle::UnicolorCylinder | BondStyle::BicolorCylinder => None,
     }
 }
 
@@ -2506,7 +2533,7 @@ fn displayed_bond_rule<'a>(
     first: &RenderAtom,
     second: &RenderAtom,
     settings: &'a VisualSettings,
-) -> Option<&'a BondRule> {
+) -> Option<(usize, &'a BondRule)> {
     let supercell = settings.supercell.map(|cells| cells.max(1) as f32);
     let matches_rule = |rule: &BondRule| {
         rule.enabled
@@ -2522,7 +2549,11 @@ fn displayed_bond_rule<'a>(
     {
         return None;
     }
-    settings.bond_rules.iter().find(|rule| matches_rule(rule))
+    settings
+        .bond_rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| matches_rule(rule))
 }
 
 fn bond_supports_polyhedron(

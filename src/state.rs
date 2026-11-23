@@ -60,6 +60,28 @@ impl SceneObjectAnchor {
     }
 }
 
+/// Rendering backend for free-form scene lines.
+///
+/// `ThreeDimensional` uses the regular mesh pipeline, giving the line a real
+/// cylindrical radius in scene units. `ScreenSpace` uses Bevy's retained gizmo
+/// renderer, whose width is specified in physical pixels and therefore remains
+/// constant while zooming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SceneLineRenderMode {
+    #[default]
+    ThreeDimensional,
+    ScreenSpace,
+}
+
+impl SceneLineRenderMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::ThreeDimensional => "3D cylinder",
+            Self::ScreenSpace => "Screen-space (Gizmo)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum SceneObjectKind {
     Ground {
@@ -115,10 +137,18 @@ pub(crate) enum SceneObjectKind {
         start: [f32; 3],
         end: [f32; 3],
         radius: f32,
+        #[serde(default)]
+        render_mode: SceneLineRenderMode,
+        #[serde(default = "default_scene_line_screen_width")]
+        screen_width: f32,
     },
     Polyline {
         points: Vec<[f32; 3]>,
         radius: f32,
+        #[serde(default)]
+        render_mode: SceneLineRenderMode,
+        #[serde(default = "default_scene_line_screen_width")]
+        screen_width: f32,
     },
     Measurement {
         kind: MeasurementKind,
@@ -132,6 +162,10 @@ pub(crate) enum SceneObjectKind {
         outline_color: [u8; 3],
         outline_width: f32,
     },
+}
+
+fn default_scene_line_screen_width() -> f32 {
+    3.5
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -388,7 +422,7 @@ impl Default for BondRule {
             max_length: 2.5,
             bond_style: BondStyle::BicolorCylinder,
             bond_radius: 0.095,
-            bond_pixel_width: 2.0,
+            bond_pixel_width: 3.5,
             bond_color: [127, 127, 127],
             show_polyhedra: true,
             polyhedron_color: [74, 164, 255],
@@ -817,13 +851,13 @@ impl Default for VisualSettings {
             bond_rules: Vec::new(),
             atom_display_mode: AtomDisplayMode::BallAndStick,
             polyhedron_show_edges: true,
-            polyhedron_edge_radius: 0.015,
+            polyhedron_edge_radius: 3.5,
             polyhedron_edge_color: [255, 255, 255],
             show_vectors: true,
             vectors: VectorSettings::default(),
             unit_cell_display: UnitCellDisplay::All,
             unit_cell_line_style: CellLineStyle::Solid,
-            unit_cell_line_width: 0.6,
+            unit_cell_line_width: 2.5,
             unit_cell_color: [0, 0, 0],
             show_outlines: false,
             auto_rotate: false,

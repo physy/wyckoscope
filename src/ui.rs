@@ -1294,6 +1294,8 @@ fn ui_objects_tab(
                         start: [-1.0, 0.0, 0.0],
                         end: [1.0, 0.0, 0.0],
                         radius: 0.035,
+                        render_mode: SceneLineRenderMode::ThreeDimensional,
+                        screen_width: 3.5,
                     },
                 ),
                 (
@@ -1301,6 +1303,8 @@ fn ui_objects_tab(
                     SceneObjectKind::Polyline {
                         points: vec![[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
                         radius: 0.035,
+                        render_mode: SceneLineRenderMode::ThreeDimensional,
+                        screen_width: 3.5,
                     },
                 ),
             ] {
@@ -1520,13 +1524,58 @@ fn ui_objects_tab(
                             changed |= vector3_control(ui, "Size", size, 0.05);
                             changed |= labeled_slider(ui, "Line radius", line_radius, 0.005..=0.2);
                         }
-                        SceneObjectKind::Line { start, end, radius } => {
+                        SceneObjectKind::Line {
+                            start,
+                            end,
+                            radius,
+                            render_mode,
+                            screen_width,
+                        } => {
                             changed |= vector3_control(ui, "Start", start, 0.05);
                             changed |= vector3_control(ui, "End", end, 0.05);
-                            changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                            changed |= scene_line_render_mode_control(
+                                ui,
+                                ("scene_line_render_mode", object.id),
+                                render_mode,
+                            );
+                            match render_mode {
+                                SceneLineRenderMode::ThreeDimensional => {
+                                    changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                                }
+                                SceneLineRenderMode::ScreenSpace => {
+                                    changed |= labeled_slider(
+                                        ui,
+                                        "Width (px)",
+                                        screen_width,
+                                        0.5..=32.0,
+                                    );
+                                }
+                            }
                         }
-                        SceneObjectKind::Polyline { points, radius } => {
-                            changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                        SceneObjectKind::Polyline {
+                            points,
+                            radius,
+                            render_mode,
+                            screen_width,
+                        } => {
+                            changed |= scene_line_render_mode_control(
+                                ui,
+                                ("scene_polyline_render_mode", object.id),
+                                render_mode,
+                            );
+                            match render_mode {
+                                SceneLineRenderMode::ThreeDimensional => {
+                                    changed |= labeled_slider(ui, "Radius", radius, 0.002..=0.3);
+                                }
+                                SceneLineRenderMode::ScreenSpace => {
+                                    changed |= labeled_slider(
+                                        ui,
+                                        "Width (px)",
+                                        screen_width,
+                                        0.5..=32.0,
+                                    );
+                                }
+                            }
                             let mut remove_point = None;
                             let can_remove_point = points.len() > 2;
                             for (index, point) in points.iter_mut().enumerate() {
@@ -1898,9 +1947,9 @@ fn ui_bonds_tab(
             if settings.polyhedron_show_edges {
                 if labeled_slider(
                     ui,
-                    "Edge radius",
+                    "Edge width (px)",
                     &mut settings.polyhedron_edge_radius,
-                    0.005..=0.12,
+                    0.5..=8.0,
                 ) {
                     dirty.mark(false);
                 }
@@ -2512,8 +2561,12 @@ fn ui_bond_rule_controls(
                     if labeled_slider(ui, "Bond radius (Å)", &mut rule.bond_radius, 0.005..=0.30) {
                         dirty.mark(false);
                     }
-                    if labeled_slider(ui, "Line width (px)", &mut rule.bond_pixel_width, 0.5..=8.0)
-                    {
+                    if labeled_slider(
+                        ui,
+                        "Line width (px)",
+                        &mut rule.bond_pixel_width,
+                        0.5..=16.0,
+                    ) {
                         dirty.mark(false);
                     }
                     if rule.show_polyhedra {
@@ -2790,6 +2843,36 @@ fn overlay_label_style_controls(
         }
     });
     ui.checkbox(bold, "Bold");
+}
+
+fn scene_line_render_mode_control(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    render_mode: &mut SceneLineRenderMode,
+) -> bool {
+    let before = *render_mode;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Renderer")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(render_mode.label())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    render_mode,
+                    SceneLineRenderMode::ThreeDimensional,
+                    SceneLineRenderMode::ThreeDimensional.label(),
+                );
+                ui.selectable_value(
+                    render_mode,
+                    SceneLineRenderMode::ScreenSpace,
+                    SceneLineRenderMode::ScreenSpace.label(),
+                );
+            });
+    });
+    *render_mode != before
 }
 
 fn vector3_control(ui: &mut egui::Ui, label: &str, values: &mut [f32; 3], speed: f64) -> bool {

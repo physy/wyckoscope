@@ -10,6 +10,7 @@ mod ui;
 mod widgets;
 
 use bevy::{
+    gizmos::AppGizmoBuilder,
     pbr::wireframe::WireframePlugin,
     prelude::*,
     window::{PresentMode, WindowResolution},
@@ -28,8 +29,8 @@ use project::{
     apply_workspace_requests, initialize_history, initialize_workspace, track_history,
 };
 use scene::{
-    orient_occupancy_sectors, rebuild_legend_previews, rebuild_scene, setup,
-    sync_legend_preview_lights,
+    UnitCellGizmoGroup, draw_unit_cell_lines, orient_occupancy_sectors, rebuild_legend_previews,
+    rebuild_scene, setup, sync_legend_preview_lights, sync_unit_cell_gizmo_config,
 };
 use state::{
     AppState, AsyncDialogs, ElementOverrides, ExportState, InspectorLayout, InspectorState,
@@ -102,6 +103,7 @@ fn main() {
             }),
             ..default()
         }))
+        .init_gizmo_group::<UnitCellGizmoGroup>()
         .add_plugins(EguiPlugin::default())
         .add_plugins(OutlinedLabelPlugin)
         .add_plugins(WireframePlugin::default())
@@ -120,6 +122,8 @@ fn main() {
                 apply_history_requests,
                 select_atom,
                 rebuild_scene,
+                sync_unit_cell_gizmo_config,
+                draw_unit_cell_lines,
                 rebuild_legend_previews,
                 orbit_camera,
                 orient_occupancy_sectors,
