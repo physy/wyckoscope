@@ -791,6 +791,9 @@ pub(crate) enum CellLineStyle {
     Dashed,
 }
 
+/// Saturated default colours for the a, b, and c orientation axes.
+pub(crate) const DEFAULT_AXIS_COLORS: [[u8; 3]; 3] = [[255, 32, 32], [28, 214, 68], [32, 84, 255]];
+
 impl CellLineStyle {
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -882,7 +885,7 @@ impl Default for VisualSettings {
             show_outlines: false,
             auto_rotate: false,
             background: [255, 255, 255],
-            axis_colors: [[235, 31, 31], [31, 184, 51], [31, 82, 245]],
+            axis_colors: DEFAULT_AXIS_COLORS,
             axis_label_size: 20.0,
             axis_label_color: OverlayLabelColor::Matching,
             axis_label_bold: true,

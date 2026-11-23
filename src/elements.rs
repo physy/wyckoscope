@@ -1,4 +1,4 @@
-use bevy::prelude::Color;
+use bevy::{color::Hsla, prelude::Color};
 use serde::{Deserialize, Serialize};
 
 /// A named palette for the default element colours.  Radii remain independent
@@ -29,7 +29,7 @@ impl ElementColorScheme {
             Self::Wyckoscope => "Wyckoscope",
             Self::Jmol => "Jmol",
             Self::Cpk => "CPK",
-            Self::Crystallographic => "Crystallographic Pastel",
+            Self::Crystallographic => "Crystallographic",
             Self::Rasmol => "RasMol",
             Self::Colorblind => "Colorblind-friendly",
         }
@@ -200,8 +200,6 @@ fn palette_color(symbol: &str, scheme: ElementColorScheme, fallback: Color) -> C
             "Hg" => (170, 170, 190),
             _ => return fallback,
         },
-        // An independently designed, low-saturation palette for crystal
-        // figures. It deliberately does not reuse VESTA's distributed table.
         ElementColorScheme::Crystallographic => match symbol {
             "H" => (248, 205, 207),
             "D" => (193, 218, 248),
@@ -318,7 +316,21 @@ fn palette_color(symbol: &str, scheme: ElementColorScheme, fallback: Color) -> C
             _ => return fallback,
         },
     };
-    rgb(color.0, color.1, color.2)
+    let color = rgb(color.0, color.1, color.2);
+    if scheme == ElementColorScheme::Crystallographic {
+        crystallographic_vivid_color(color)
+    } else {
+        color
+    }
+}
+
+/// Preserve the deliberately distinct hue and brightness of the
+/// crystallographic palette while moving it away from its former pastel look.
+/// Neutral greys remain neutral because they have no meaningful hue to boost.
+fn crystallographic_vivid_color(color: Color) -> Color {
+    let mut hsla = Hsla::from(color);
+    hsla.saturation = (hsla.saturation * 1.42).min(1.0);
+    Color::from(hsla)
 }
 
 pub fn normalize_symbol(raw: &str) -> String {
@@ -355,5 +367,14 @@ mod tests {
             base.color.to_srgba().to_u8_array_no_alpha(),
             jmol.color.to_srgba().to_u8_array_no_alpha()
         );
+    }
+
+    #[test]
+    fn crystallographic_palette_is_more_saturated_than_its_source_colours() {
+        let source = rgb(80, 118, 205);
+        let vivid = style_for_scheme("Si", ElementColorScheme::Crystallographic).color;
+
+        assert!(Hsla::from(vivid).saturation > Hsla::from(source).saturation);
+        assert_eq!(vivid.to_srgba().to_u8_array_no_alpha(), [54, 108, 231]);
     }
 }

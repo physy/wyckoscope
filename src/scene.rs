@@ -159,11 +159,8 @@ pub(crate) fn setup(
         },
     ));
 
-    let axis_colors = [
-        Color::srgb_u8(235, 31, 31),
-        Color::srgb_u8(31, 184, 51),
-        Color::srgb_u8(31, 82, 245),
-    ];
+    let axis_colors =
+        DEFAULT_AXIS_COLORS.map(|[red, green, blue]| Color::srgb_u8(red, green, blue));
     let axis_materials = axis_colors.map(|color| {
         materials.add(StandardMaterial {
             base_color: color,
