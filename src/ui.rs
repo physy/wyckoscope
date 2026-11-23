@@ -133,9 +133,7 @@ pub(crate) fn interface(
                     InspectorTab::Vectors => {
                         ui_vectors_tab(ui, &state, &mut settings, &selection, &mut dirty)
                     }
-                    InspectorTab::Bonds => {
-                        ui_bonds_tab(ui, &state, &mut settings, &overrides, &mut dirty)
-                    }
+                    InspectorTab::Bonds => ui_bonds_tab(ui, &state, &mut settings, &mut dirty),
                     InspectorTab::View => {
                         let (orbit, _, _, _) = &mut *camera;
                         ui_view_tab(ui, &state, &mut settings, orbit, &mut dirty);
@@ -1895,7 +1893,6 @@ fn ui_bonds_tab(
     ui: &mut egui::Ui,
     state: &AppState,
     settings: &mut VisualSettings,
-    overrides: &ElementOverrides,
     dirty: &mut SceneDirty,
 ) {
     section(ui, "BOND DISPLAY", |ui| {
@@ -1915,7 +1912,7 @@ fn ui_bonds_tab(
         );
     });
 
-    ui_bond_rule_controls(ui, state, settings, overrides, dirty);
+    ui_bond_rule_controls(ui, state, settings, dirty);
 
     section(ui, "POLYHEDRA", |ui| {
         let rule_polyhedra = settings
@@ -2335,29 +2332,6 @@ fn bond_targets(state: &AppState, mode: BondMatchMode) -> Vec<String> {
     targets
 }
 
-fn default_polyhedron_color(
-    target: &str,
-    match_mode: BondMatchMode,
-    state: &AppState,
-    scheme: wyckoscope::elements::ElementColorScheme,
-    overrides: &ElementOverrides,
-) -> [u8; 3] {
-    let symbol = match match_mode {
-        BondMatchMode::Element => target,
-        BondMatchMode::SiteLabel => state
-            .structure
-            .asymmetric_atoms
-            .iter()
-            .find(|atom| atom.label.eq_ignore_ascii_case(target))
-            .map_or(target, |atom| atom.element.as_str()),
-    };
-    overrides
-        .0
-        .get(symbol)
-        .map(|appearance| appearance.color)
-        .unwrap_or_else(|| default_appearance(symbol, scheme).color)
-}
-
 fn bond_target_combo(
     ui: &mut egui::Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
@@ -2384,11 +2358,9 @@ fn ui_bond_rule_controls(
     ui: &mut egui::Ui,
     state: &AppState,
     settings: &mut VisualSettings,
-    overrides: &ElementOverrides,
     dirty: &mut SceneDirty,
 ) {
     section(ui, "BOND RULES", |ui| {
-        let element_color_scheme = settings.element_color_scheme;
         ui.label(
             egui::RichText::new("Each rule defines an A1 center, A2 neighbor, and distance range.")
                 .size(11.0)
@@ -2399,17 +2371,9 @@ fn ui_bond_rule_controls(
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            let polyhedron_color = default_polyhedron_color(
-                &target,
-                BondMatchMode::Element,
-                state,
-                element_color_scheme,
-                overrides,
-            );
             settings.bond_rules.push(BondRule {
                 center: target.clone(),
                 neighbor: target,
-                polyhedron_color,
                 ..default()
             });
             dirty.mark(false);
@@ -2573,23 +2537,31 @@ fn ui_bond_rule_controls(
                         ui.add_space(5.0);
                         ui.horizontal(|ui| {
                             ui.label("Polyhedron color");
-                            if ui
-                                .color_edit_button_srgb(&mut rule.polyhedron_color)
-                                .changed()
+                            for mode in [PolyhedronColorMode::A1Color, PolyhedronColorMode::Custom]
                             {
-                                dirty.mark(false);
-                            }
-                            if ui.button("Use A1 color").clicked() {
-                                rule.polyhedron_color = default_polyhedron_color(
-                                    &rule.center,
-                                    rule.match_mode,
-                                    state,
-                                    element_color_scheme,
-                                    overrides,
-                                );
-                                dirty.mark(false);
+                                if ui
+                                    .radio_value(
+                                        &mut rule.polyhedron_color_mode,
+                                        mode,
+                                        mode.label(),
+                                    )
+                                    .changed()
+                                {
+                                    dirty.mark(false);
+                                }
                             }
                         });
+                        if rule.polyhedron_color_mode == PolyhedronColorMode::Custom
+                            && ui
+                                .horizontal(|ui| {
+                                    ui.label("Custom color");
+                                    ui.color_edit_button_srgb(&mut rule.polyhedron_color)
+                                        .changed()
+                                })
+                                .inner
+                        {
+                            dirty.mark(false);
+                        }
                         if labeled_slider(
                             ui,
                             "Polyhedron opacity",

@@ -930,7 +930,6 @@ pub(crate) fn rebuild_scene(
             if !rule.enabled || !rule.show_polyhedra {
                 continue;
             }
-            let polyhedron_material = materials.add(polyhedron_material(rule));
             for (center_index, center_atom) in render_atoms.iter().enumerate() {
                 if !atom_matches(&rule.center, center_atom, rule.match_mode) {
                     continue;
@@ -944,6 +943,14 @@ pub(crate) fn rebuild_scene(
                     .map(|neighbor_index| render_atoms[neighbor_index].position)
                     .collect();
                 if let Some(polyhedron) = coordination_polyhedron(&neighbors) {
+                    let color = resolved_polyhedron_color(
+                        rule,
+                        center_atom,
+                        &overrides,
+                        settings.element_color_scheme,
+                    );
+                    let polyhedron_material =
+                        materials.add(polyhedron_material(color, rule.polyhedron_opacity));
                     commands.spawn((
                         Name::new(format!(
                             "Coordination polyhedron {} for {}",
@@ -1686,13 +1693,28 @@ fn cell_edge_key(first: Vec3, second: Vec3) -> ([i64; 3], [i64; 3]) {
     }
 }
 
-fn polyhedron_material(rule: &BondRule) -> StandardMaterial {
+fn resolved_polyhedron_color(
+    rule: &BondRule,
+    center_atom: &RenderAtom,
+    overrides: &ElementOverrides,
+    scheme: elements::ElementColorScheme,
+) -> [u8; 3] {
+    match rule.polyhedron_color_mode {
+        PolyhedronColorMode::A1Color => resolved_style(&center_atom.element, overrides, scheme)
+            .color
+            .to_srgba()
+            .to_u8_array_no_alpha(),
+        PolyhedronColorMode::Custom => rule.polyhedron_color,
+    }
+}
+
+fn polyhedron_material(color: [u8; 3], opacity: f32) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgba(
-            rule.polyhedron_color[0] as f32 / 255.0,
-            rule.polyhedron_color[1] as f32 / 255.0,
-            rule.polyhedron_color[2] as f32 / 255.0,
-            rule.polyhedron_opacity,
+            color[0] as f32 / 255.0,
+            color[1] as f32 / 255.0,
+            color[2] as f32 / 255.0,
+            opacity,
         ),
         alpha_mode: AlphaMode::Blend,
         metallic: 0.08,

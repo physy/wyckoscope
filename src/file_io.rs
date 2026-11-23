@@ -405,6 +405,7 @@ fn apply_imported_visuals(
                 bond_pixel_width: rule.pixel_width,
                 bond_color: rule.color,
                 show_polyhedra: rule.show_polyhedra,
+                polyhedron_color_mode: PolyhedronColorMode::A1Color,
                 polyhedron_color: wyckoscope::elements::style_for_scheme(
                     &rule.center,
                     settings.element_color_scheme,

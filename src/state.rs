@@ -390,6 +390,24 @@ impl BondStyle {
     }
 }
 
+/// Selects whether a polyhedron uses the currently resolved color of its A1
+/// atom or the explicit RGB value stored on the bond rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PolyhedronColorMode {
+    #[default]
+    A1Color,
+    Custom,
+}
+
+impl PolyhedronColorMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::A1Color => "A1 color",
+            Self::Custom => "Custom",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct BondRule {
     pub(crate) enabled: bool,
@@ -405,6 +423,7 @@ pub(crate) struct BondRule {
     pub(crate) bond_pixel_width: f32,
     pub(crate) bond_color: [u8; 3],
     pub(crate) show_polyhedra: bool,
+    pub(crate) polyhedron_color_mode: PolyhedronColorMode,
     pub(crate) polyhedron_color: [u8; 3],
     pub(crate) polyhedron_opacity: f32,
 }
@@ -425,6 +444,7 @@ impl Default for BondRule {
             bond_pixel_width: 3.5,
             bond_color: [127, 127, 127],
             show_polyhedra: true,
+            polyhedron_color_mode: PolyhedronColorMode::A1Color,
             polyhedron_color: [74, 164, 255],
             polyhedron_opacity: 0.50,
         }
