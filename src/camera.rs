@@ -132,7 +132,16 @@ pub(crate) fn orbit_camera(
     if keyboard.just_pressed(KeyCode::KeyF) {
         orbit.reset();
     }
-    if !egui_input.wants_any_pointer_input() {
+    // `EguiWantsInput` is updated after egui has processed its frame, while
+    // camera input is handled in Update. Check the viewport bounds directly
+    // as well so a wheel event over the inspector can never reach the scene.
+    let cursor_in_render_viewport = cursor_is_in_render_viewport(
+        window.cursor_position(),
+        &window,
+        layout.width,
+        RENDER_TAB_BAR_HEIGHT,
+    );
+    if cursor_in_render_viewport && !egui_input.wants_any_pointer_input() {
         let delta = mouse_motion.delta;
         let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let pan = mouse_buttons.pressed(MouseButton::Middle)
@@ -314,6 +323,21 @@ fn arcball_position(
     } else {
         Vec3::new(point.x, point.y, 0.0).normalize()
     })
+}
+
+fn cursor_is_in_render_viewport(
+    cursor: Option<Vec2>,
+    window: &Window,
+    panel_width: f32,
+    render_top: f32,
+) -> bool {
+    let Some(cursor) = cursor else {
+        return false;
+    };
+    cursor.x >= panel_width
+        && cursor.x < window.width()
+        && cursor.y >= render_top
+        && cursor.y < window.height()
 }
 
 fn apply_projection_blend(projection: &mut Projection, radius: f32, blend: f32) -> f32 {
