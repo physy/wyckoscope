@@ -267,7 +267,7 @@ pub(crate) fn sync_orientation_axes(
     axis_camera.translation = main_camera.rotation * Vec3::Z * 4.0;
 
     for (index, handle) in axis_materials.0.iter().enumerate() {
-        if let Some(material) = materials.get_mut(handle) {
+        if let Some(mut material) = materials.get_mut(handle) {
             let color = Color::srgb_u8(
                 settings.axis_colors[index][0],
                 settings.axis_colors[index][1],

@@ -1,9 +1,5 @@
 use std::{collections::HashSet, sync::Arc};
 
-use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
-use egui_text_outline::OutlinedLabel;
-
 use crate::{
     AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, MIN_RENDER_WIDTH, RENDER_TAB_BAR_HEIGHT,
     file_io::{
@@ -17,7 +13,10 @@ use crate::{
     },
     state::*,
     transport::{TransportAnalysis, analyze as analyze_transport, component_label},
+    widgets::OutlinedLabel,
 };
+use bevy::prelude::*;
+use bevy_egui::{EguiContexts, egui};
 
 /// Semantic UI colours. Keep presentation colours here instead of scattering
 /// raw RGB values through each inspector section.
@@ -49,7 +48,7 @@ use palette::*;
 
 const INTERFACE_FONT_NAME: &str = "wyckoscope-noto-sans-jp-regular";
 const INTERFACE_BOLD_FONT_NAME: &str = "wyckoscope-noto-sans-jp-bold";
-const OVERLAY_LABEL_OUTLINE_WIDTH: f32 = 1.1;
+const OVERLAY_LABEL_OUTLINE_WIDTH: f32 = 1.8;
 const LEGEND_LABEL_BASE_SIZE: f32 = 18.0;
 const LEGEND_SPHERE_BASE_RADIUS: f32 = 14.0;
 
@@ -89,17 +88,24 @@ pub(crate) fn interface(
     }
     configure_egui_style(ctx);
     let max_panel_width = (ctx.content_rect().width() - MIN_RENDER_WIDTH).clamp(260.0, 560.0);
-    let panel = egui::SidePanel::left("inspector")
+    let mut viewport_ui = egui::Ui::new(
+        ctx.clone(),
+        "viewport".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    let panel = egui::Panel::left("inspector")
         .resizable(true)
-        .default_width(layout.width)
-        .min_width(260.0)
-        .max_width(max_panel_width)
+        .default_size(layout.width)
+        .min_size(260.0)
+        .max_size(max_panel_width)
         .frame(
             egui::Frame::NONE
                 .fill(panel_background())
                 .inner_margin(egui::Margin::same(18)),
         )
-        .show(ctx, |ui| {
+        .show(&mut viewport_ui, |ui| {
             app_header(ui);
             ui.add_space(18.0);
             tab_bar(ui, &mut inspector.tab);
@@ -2335,7 +2341,7 @@ fn default_polyhedron_color(
 
 fn bond_target_combo(
     ui: &mut egui::Ui,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     value: &mut String,
     targets: &[String],
 ) -> bool {
@@ -3207,7 +3213,7 @@ fn export_preview_modal(
                         .clamp(-2.0, 2.0);
             }
             if canvas_response.hovered() && !axis_response.hovered() && !legend_response.hovered() {
-                let scroll = ui.input(|input| input.raw_scroll_delta.y);
+                let scroll = ui.input(|input| input.smooth_scroll_delta().y);
                 if scroll != 0.0 {
                     settings.export_view_scale =
                         (settings.export_view_scale * (scroll * 0.002).exp()).clamp(1.0, 5.0);
@@ -3271,7 +3277,7 @@ fn edit_export_overlay(
         layout.position[1] = (layout.position[1] + delta.y / canvas.height()).clamp(0.0, 1.0);
     }
     if response.hovered() {
-        let scroll = ui.input(|input| input.raw_scroll_delta.y);
+        let scroll = ui.input(|input| input.smooth_scroll_delta().y);
         if scroll != 0.0 {
             layout.scale = (layout.scale * (1.0 + scroll * 0.002)).clamp(0.5, 3.0);
         }
@@ -3455,7 +3461,8 @@ fn draw_export_preview_labels(
 }
 
 fn configure_egui_style(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    ctx.set_theme(egui::Theme::Dark);
+    let mut style = (*ctx.global_style()).clone();
     for font_id in style.text_styles.values_mut() {
         font_id.family = interface_font_family();
     }
@@ -3477,7 +3484,7 @@ fn configure_egui_style(ctx: &egui::Context) {
     style.visuals.widgets.inactive.corner_radius = 7.0.into();
     style.visuals.widgets.hovered.corner_radius = 7.0.into();
     style.visuals.widgets.active.corner_radius = 7.0.into();
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 fn install_interface_font(ctx: &egui::Context) {

@@ -1,7 +1,7 @@
 use ab_glyph::{Font, FontRef, Glyph, OutlinedGlyph, PxScale, PxScaleFactor, point};
 use bevy::{
     camera::{CameraOutputMode, Exposure, RenderTarget, ScalingMode, visibility::RenderLayers},
-    core_pipeline::tonemapping::Tonemapping,
+    core_pipeline::tonemapping::{DebandDither, Tonemapping},
     post_process::bloom::Bloom,
     prelude::*,
     render::{
@@ -18,7 +18,7 @@ use crate::{
 
 const EXPORT_COMPOSITE_LAYER: usize = 5;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn process_export(
     mut commands: Commands,
     mut export: ResMut<ExportState>,
@@ -28,6 +28,7 @@ pub(crate) fn process_export(
             &Transform,
             &Projection,
             &Tonemapping,
+            &DebandDither,
             &Exposure,
             &OrbitCamera,
         ),
@@ -80,9 +81,10 @@ pub(crate) fn process_export(
         let image = images.add(Image::new_target_texture(
             width,
             height,
-            TextureFormat::bevy_default(),
+            TextureFormat::Rgba8UnormSrgb,
+            None,
         ));
-        let (transform, projection, tonemapping, exposure, orbit) = *main_camera;
+        let (transform, projection, tonemapping, deband_dither, exposure, orbit) = *main_camera;
         let mut transform = *transform;
         let mut projection = projection.clone();
         apply_export_view_scale(&mut projection, settings.export_view_scale);
@@ -111,12 +113,13 @@ pub(crate) fn process_export(
                 Camera3d::default(),
                 Camera {
                     order: 0,
-                    target: RenderTarget::Image(image.clone().into()),
                     clear_color: ClearColorConfig::Custom(background),
                     ..default()
                 },
+                RenderTarget::Image(image.clone().into()),
                 projection,
                 *tonemapping,
+                *deband_dither,
                 *exposure,
                 Bloom::NATURAL,
                 Msaa::Sample4,
@@ -142,10 +145,11 @@ pub(crate) fn process_export(
     {
         let width = request.width.clamp(256, 8192);
         let height = request.height.clamp(256, 8192);
-        let mut image = Image::new_target_texture(width, height, TextureFormat::bevy_default());
+        let mut image =
+            Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         let image_handle = images.add(image);
-        let (transform, projection, tonemapping, exposure, orbit) = *main_camera;
+        let (transform, projection, tonemapping, deband_dither, exposure, orbit) = *main_camera;
         let mut transform = *transform;
         let mut export_projection = projection.clone();
         apply_export_view_scale(&mut export_projection, request.view_scale);
@@ -174,12 +178,13 @@ pub(crate) fn process_export(
                 Camera3d::default(),
                 Camera {
                     order: 0,
-                    target: RenderTarget::Image(image_handle.clone().into()),
                     clear_color: ClearColorConfig::Custom(background),
                     ..default()
                 },
+                RenderTarget::Image(image_handle.clone().into()),
                 export_projection,
                 *tonemapping,
+                *deband_dither,
                 *exposure,
                 Bloom::NATURAL,
                 Msaa::Sample4,
@@ -491,7 +496,6 @@ fn spawn_overlay_cameras(
                 Camera2d,
                 Camera {
                     order: 10,
-                    target: RenderTarget::Image(target.into()),
                     clear_color: ClearColorConfig::None,
                     output_mode: CameraOutputMode::Write {
                         blend_state: Some(BlendState::ALPHA_BLENDING),
@@ -499,6 +503,7 @@ fn spawn_overlay_cameras(
                     },
                     ..default()
                 },
+                RenderTarget::Image(target.into()),
                 RenderLayers::layer(EXPORT_COMPOSITE_LAYER),
                 ExportCamera,
             ))

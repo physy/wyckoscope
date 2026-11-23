@@ -7,6 +7,7 @@ mod scene;
 mod state;
 mod transport;
 mod ui;
+mod widgets;
 
 use bevy::{
     pbr::wireframe::WireframePlugin,
@@ -36,6 +37,7 @@ use state::{
     VisualSettings,
 };
 use ui::interface;
+use widgets::OutlinedLabelPlugin;
 
 const SAMPLE_CIF: &str = include_str!("../assets/samples/perovskite.cif");
 pub(crate) const AXIS_VIEW_SIZE: f32 = 180.0;
@@ -53,7 +55,7 @@ fn main() {
 
     App::new()
         .insert_resource(ClearColor(Color::WHITE))
-        .insert_resource(AmbientLight {
+        .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.82, 0.87, 0.98),
             brightness: 520.0,
             affects_lightmapped_meshes: true,
@@ -101,6 +103,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
+        .add_plugins(OutlinedLabelPlugin)
         .add_plugins(WireframePlugin::default())
         .add_systems(
             Startup,

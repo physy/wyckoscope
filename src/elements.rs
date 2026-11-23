@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 
 /// A named palette for the default element colours.  Radii remain independent
 /// from the palette so changing a scheme never changes the geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ElementColorScheme {
     Wyckoscope,
     Jmol,
     Cpk,
+    #[default]
     Crystallographic,
     Rasmol,
     Colorblind,
@@ -32,12 +33,6 @@ impl ElementColorScheme {
             Self::Rasmol => "RasMol",
             Self::Colorblind => "Colorblind-friendly",
         }
-    }
-}
-
-impl Default for ElementColorScheme {
-    fn default() -> Self {
-        Self::Crystallographic
     }
 }
 

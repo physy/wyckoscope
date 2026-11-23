@@ -125,7 +125,11 @@ pub(crate) fn setup(
             order: 0,
             clear_color: ClearColorConfig::Custom(Color::NONE),
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                // The transparent intermediate render target already contains
+                // premultiplied colors. Using straight-alpha blending here
+                // would multiply antialiased edge pixels by alpha a second
+                // time and produce dark fringes.
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             ..default()
@@ -202,7 +206,8 @@ pub(crate) fn setup(
     let axis_image = images.add(Image::new_target_texture(
         AXIS_OVERLAY_SIZE,
         AXIS_OVERLAY_SIZE,
-        TextureFormat::bevy_default(),
+        TextureFormat::Rgba8UnormSrgb,
+        None,
     ));
     let axis_texture_id = egui_textures.add_image(EguiTextureHandle::Strong(axis_image.clone()));
     commands.insert_resource(AxisOverlay {
@@ -214,10 +219,10 @@ pub(crate) fn setup(
         Camera3d::default(),
         Camera {
             order: 1,
-            target: RenderTarget::Image(axis_image.into()),
             clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
+        RenderTarget::Image(axis_image.into()),
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::FixedVertical {
                 viewport_height: 3.4,
@@ -234,7 +239,7 @@ pub(crate) fn setup(
         DirectionalLight {
             color: Color::srgb(1.0, 0.97, 0.92),
             illuminance: 16_000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.65, -0.75, 0.0)),
@@ -246,7 +251,7 @@ pub(crate) fn setup(
         DirectionalLight {
             color: Color::srgb(0.5, 0.68, 1.0),
             illuminance: 5_000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.45, 2.25, 0.0)),
@@ -260,7 +265,9 @@ pub(crate) fn setup(
             order: 3,
             clear_color: ClearColorConfig::None,
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                // egui and paint callbacks are composited into a transparent
+                // premultiplied intermediate target before this final write.
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             ..default()
@@ -277,7 +284,7 @@ pub(crate) fn setup(
             intensity: 760_000.0,
             range: 100.0,
             radius: 4.5,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             shadow_depth_bias: 0.02,
             shadow_normal_bias: 0.55,
             ..default()
@@ -295,7 +302,7 @@ pub(crate) fn setup(
             radius: 4.5,
             inner_angle: 28.0_f32.to_radians(),
             outer_angle: 42.0_f32.to_radians(),
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             shadow_depth_bias: 0.02,
             shadow_normal_bias: 0.55,
             ..default()
@@ -309,7 +316,7 @@ pub(crate) fn setup(
         DirectionalLight {
             color: Color::srgb(1.0, 0.94, 0.86),
             illuminance: 20_000.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             shadow_depth_bias: 0.02,
             shadow_normal_bias: 0.55,
             ..default()
@@ -322,7 +329,7 @@ pub(crate) fn setup(
         DirectionalLight {
             color: Color::srgb(0.52, 0.66, 1.0),
             illuminance: 4_800.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, 2.4, 0.0)),
@@ -384,7 +391,7 @@ pub(crate) fn rebuild_legend_previews(
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.90),
             illuminance: 16_000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, -0.7, 0.0)),
@@ -412,17 +419,18 @@ pub(crate) fn rebuild_legend_previews(
         let image = images.add(Image::new_target_texture(
             LEGEND_ICON_SIZE,
             LEGEND_ICON_SIZE,
-            TextureFormat::bevy_default(),
+            TextureFormat::Rgba8UnormSrgb,
+            None,
         ));
         let texture_id = egui_textures.add_image(EguiTextureHandle::Strong(image.clone()));
         commands.spawn((
             Camera3d::default(),
             Camera {
                 order: -1,
-                target: RenderTarget::Image(image.clone().into()),
                 clear_color: ClearColorConfig::Custom(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 ..default()
             },
+            RenderTarget::Image(image.clone().into()),
             Projection::Orthographic(OrthographicProjection {
                 scaling_mode: ScalingMode::FixedVertical {
                     viewport_height: 2.35,
@@ -1192,7 +1200,6 @@ fn spawn_scene_objects(
                 kind,
                 points,
                 radius,
-                label_size: _,
                 ..
             } => {
                 spawn_measurement(

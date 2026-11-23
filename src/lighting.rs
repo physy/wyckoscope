@@ -1,4 +1,8 @@
-use bevy::{camera::Exposure, core_pipeline::tonemapping::Tonemapping, prelude::*};
+use bevy::{
+    camera::Exposure,
+    core_pipeline::tonemapping::{DebandDither, Tonemapping},
+    prelude::*,
+};
 
 use crate::state::*;
 
@@ -7,7 +11,13 @@ pub(crate) fn sync_environment(
     settings: Res<VisualSettings>,
     mut background_camera: Single<&mut Camera, With<BackgroundCamera>>,
     mut camera: Single<
-        (&Transform, &OrbitCamera, &mut Exposure, &mut Tonemapping),
+        (
+            &Transform,
+            &OrbitCamera,
+            &mut Exposure,
+            &mut Tonemapping,
+            &mut DebandDither,
+        ),
         (With<OrbitCamera>, Without<ExportCamera>, Without<LightRole>),
     >,
     axis_camera: Single<
@@ -18,7 +28,7 @@ pub(crate) fn sync_environment(
             Without<LightRole>,
         ),
     >,
-    mut ambient: ResMut<AmbientLight>,
+    mut ambient: ResMut<GlobalAmbientLight>,
     mut lights: Query<
         (
             &LightRole,
@@ -36,12 +46,12 @@ pub(crate) fn sync_environment(
         settings.background[1],
         settings.background[2],
     ));
-    let (camera_transform, orbit, exposure, tonemapping) = &mut *camera;
+    let (camera_transform, orbit, exposure, tonemapping, deband_dither) = &mut *camera;
     exposure.ev100 = settings.exposure_ev;
-    **tonemapping = if settings.hdr_tonemapping {
-        Tonemapping::TonyMcMapface
+    (**tonemapping, **deband_dither) = if settings.hdr_tonemapping {
+        (Tonemapping::TonyMcMapface, DebandDither::Enabled)
     } else {
-        Tonemapping::None
+        (Tonemapping::None, DebandDither::Disabled)
     };
 
     let lighting = &settings.lighting;
@@ -93,7 +103,7 @@ pub(crate) fn sync_environment(
                     light.intensity = lighting.key_intensity;
                     light.range = lighting.key_range;
                     light.radius = lighting.key_radius;
-                    light.shadows_enabled = lighting.key_shadows;
+                    light.shadow_maps_enabled = lighting.key_shadows;
                     light.shadow_depth_bias = lighting.key_shadow_depth_bias;
                     light.shadow_normal_bias = lighting.key_shadow_normal_bias;
                     light.shadow_map_near_z = lighting.key_shadow_near_z;
@@ -112,7 +122,7 @@ pub(crate) fn sync_environment(
                     light.intensity = lighting.key_intensity;
                     light.range = lighting.key_range;
                     light.radius = lighting.key_radius;
-                    light.shadows_enabled = lighting.key_shadows;
+                    light.shadow_maps_enabled = lighting.key_shadows;
                     light.shadow_depth_bias = lighting.key_shadow_depth_bias;
                     light.shadow_normal_bias = lighting.key_shadow_normal_bias;
                     light.shadow_map_near_z = lighting.key_shadow_near_z;
@@ -143,7 +153,7 @@ pub(crate) fn sync_environment(
                 if let Some(mut light) = directional {
                     light.color = color_from_rgb(lighting.key_color);
                     light.illuminance = lighting.key_directional_illuminance;
-                    light.shadows_enabled = lighting.key_shadows;
+                    light.shadow_maps_enabled = lighting.key_shadows;
                     light.shadow_depth_bias = lighting.key_shadow_depth_bias;
                     light.shadow_normal_bias = lighting.key_shadow_normal_bias;
                 }
@@ -158,7 +168,7 @@ pub(crate) fn sync_environment(
                 if let Some(mut light) = directional {
                     light.color = color_from_rgb(lighting.fill_color);
                     light.illuminance = lighting.fill_illuminance;
-                    light.shadows_enabled = lighting.fill_shadows;
+                    light.shadow_maps_enabled = lighting.fill_shadows;
                     light.shadow_depth_bias = lighting.fill_shadow_depth_bias;
                     light.shadow_normal_bias = lighting.fill_shadow_normal_bias;
                 }
