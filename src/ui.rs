@@ -106,8 +106,6 @@ pub(crate) fn interface(
                 .inner_margin(egui::Margin::same(18)),
         )
         .show(&mut viewport_ui, |ui| {
-            app_header(ui);
-            ui.add_space(18.0);
             tab_bar(ui, &mut inspector.tab);
             panel_divider(ui);
             egui::ScrollArea::vertical()
@@ -693,34 +691,6 @@ fn overlay_label_font(mut font: egui::FontId, bold: bool) -> egui::FontId {
         font.family = egui::FontFamily::Name(INTERFACE_BOLD_FONT_NAME.into());
     }
     font
-}
-
-fn app_header(ui: &mut egui::Ui) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
-        ui.painter()
-            .circle_filled(rect.center(), 16.0, egui::Color32::from_rgb(65, 174, 255));
-        ui.painter().circle_filled(
-            rect.center() + egui::vec2(5.0, -4.0),
-            6.0,
-            egui::Color32::from_rgb(255, 106, 88),
-        );
-        ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new("Wyckoscope")
-                    .size(23.0)
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            );
-            ui.label(
-                egui::RichText::new("CRYSTAL VIEWER")
-                    .size(11.0)
-                    .strong()
-                    .color(ACCENT),
-            );
-        });
-    });
 }
 
 fn tab_bar(ui: &mut egui::Ui, active: &mut InspectorTab) {
