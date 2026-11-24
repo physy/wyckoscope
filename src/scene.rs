@@ -127,6 +127,10 @@ pub(crate) fn setup(
             clear_color: ClearColorConfig::Custom(Color::WHITE),
             ..default()
         },
+        // This camera only clears the window to the exact requested background
+        // colour. Without an empty layer mask it also receives layer-0 Gizmos,
+        // producing a camera-fixed duplicate of the unit-cell lines.
+        RenderLayers::none(),
         BackgroundCamera,
     ));
 
