@@ -1,4 +1,8 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     AXIS_VIEW_MARGIN, AXIS_VIEW_SIZE, MIN_RENDER_WIDTH, RENDER_TAB_BAR_HEIGHT,
@@ -12,7 +16,11 @@ use crate::{
         projected_axis_label_centers, scene_object_position, view_directions,
     },
     state::*,
-    transport::{TransportAnalysis, analyze as analyze_transport, component_label},
+    transport::{
+        LinearConductivityAnalysis, MechanismAnalysis, TransportAnalysis,
+        analyze as analyze_transport, analyze_with_soc_search, analyze_without_soc,
+        component_label,
+    },
     widgets::OutlinedLabel,
 };
 use bevy::prelude::*;
@@ -809,7 +817,7 @@ fn ui_structure_tab(
     selection: &mut SelectionState,
     dirty: &mut SceneDirty,
 ) {
-    let transport = analyze_transport(&state.structure);
+    let transport = analyze_transport(&state.structure, settings.symmetry_moment_tolerance);
     section(ui, "STRUCTURE", |ui| {
         ui.label(
             egui::RichText::new(&state.structure.title)
@@ -908,7 +916,7 @@ fn ui_structure_tab(
                 }
                 stat(
                     ui,
-                    "Magnetic point group",
+                    "Magnetic point group (file)",
                     transport.magnetic_point_group.clone(),
                 );
                 stat(
@@ -918,7 +926,7 @@ fn ui_structure_tab(
                 );
                 stat(
                     ui,
-                    "Magnetic point operations",
+                    "Magnetic point operations (file)",
                     transport.operation_count.to_string(),
                 );
                 stat(
@@ -1004,7 +1012,7 @@ fn ui_structure_tab(
             dirty.mark(true);
         }
     });
-    ui_transport_analysis(ui, &transport);
+    ui_transport_analysis(ui, &transport, &state.structure, settings);
     ui_selection_controls(ui, selection, dirty);
     if !state.structure.warnings.is_empty() {
         section(ui, "IMPORT NOTES", |ui| {
@@ -1964,7 +1972,45 @@ fn ui_bonds_tab(
     });
 }
 
-fn ui_transport_analysis(ui: &mut egui::Ui, analysis: &TransportAnalysis) {
+type SymmetryAnalysisResult =
+    Result<(LinearConductivityAnalysis, [MechanismAnalysis; 4], usize), String>;
+type ConductivityTask = Arc<
+    Mutex<(
+        Option<SymmetryAnalysisResult>,
+        Option<SymmetryAnalysisResult>,
+    )>,
+>;
+
+fn spin_input_id(structure: &wyckoscope::model::CrystalStructure) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for v in structure.cell.vectors {
+        for component in v.to_array() {
+            component.to_bits().hash(&mut hash);
+        }
+    }
+    structure.atoms.len().hash(&mut hash);
+    for atom in &structure.atoms {
+        atom.element.hash(&mut hash);
+        for value in atom.fractional.to_array() {
+            value.to_bits().hash(&mut hash);
+        }
+        atom.occupancy.to_bits().hash(&mut hash);
+        atom.magnetic_moment.is_some().hash(&mut hash);
+        if let Some(moment) = atom.magnetic_moment {
+            for value in moment.to_array() {
+                value.to_bits().hash(&mut hash);
+            }
+        }
+    }
+    hash.finish()
+}
+
+fn ui_transport_analysis(
+    ui: &mut egui::Ui,
+    analysis: &TransportAnalysis,
+    structure: &wyckoscope::model::CrystalStructure,
+    settings: &mut VisualSettings,
+) {
     ui.add_space(10.0);
     egui::Frame::NONE
         .fill(CARD_BACKGROUND)
@@ -1983,6 +2029,8 @@ fn ui_transport_analysis(ui: &mut egui::Ui, analysis: &TransportAnalysis) {
             .default_open(false)
             .show(ui, |ui| {
                 ui.add_space(6.0);
+                ui.label(egui::RichText::new(format!("Configuration: {}", analysis.moment_geometry.label())).color(ACCENT))
+                    .on_hover_text(format!("Based on imported moments in the expanded structure; magnitude threshold {} μB and angular tolerance approximately 0.01 radians.", settings.symmetry_moment_tolerance));
                 ui.label(
                     egui::RichText::new(
                         "Each cell is written in independent symmetry-allowed parameters. 0 means symmetry-forbidden.",
@@ -1998,72 +2046,160 @@ fn ui_transport_analysis(ui: &mut egui::Ui, analysis: &TransportAnalysis) {
                     .color(TEXT_SECONDARY),
                 );
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Linear conductivity σ_ij")
-                        .strong()
-                        .color(ACCENT),
-                );
-                egui::Grid::new("linear_conductivity_tensor")
-                    .num_columns(4)
-                    .spacing([10.0, 5.0])
-                    .show(ui, |ui| {
-                        ui.label("");
-                        for axis in ["x", "y", "z"] {
-                            ui.label(egui::RichText::new(axis).strong());
-                        }
-                        ui.end_row();
-                        for (row, axis) in ["x", "y", "z"].iter().enumerate() {
-                            ui.label(egui::RichText::new(*axis).strong());
-                            for column in 0..3 {
-                                let index = row * 3 + column;
-                                let expression = &analysis.linear.expressions[index];
-                                let color = if expression == "0" { TEXT_SECONDARY } else { ACCENT };
-                                ui.label(egui::RichText::new(expression).size(12.0).color(color))
-                                    .on_hover_text(format!("σ_{}{}", axis, ["x", "y", "z"][column]));
-                            }
-                            ui.end_row();
-                        }
-                    });
-                ui.add_space(13.0);
-                ui.label(
-                    egui::RichText::new("Second-order conductivity σ_i;jk")
-                        .strong()
-                        .color(ACCENT),
-                );
-                for mechanism in &analysis.mechanisms {
-            ui.label(
-                egui::RichText::new(mechanism.mechanism.label())
-                    .strong()
-            );
-            egui::Grid::new(egui::Id::new(("transport_tensor", mechanism.mechanism)))
-                .num_columns(7)
-                .spacing([7.0, 5.0])
-                .show(ui, |ui| {
-                    ui.label("");
-                    for suffix in ["xx", "yy", "zz", "yz", "zx", "xy"] {
-                        ui.label(egui::RichText::new(suffix).strong());
-                    }
+                let structure_id = spin_input_id(structure);
+                let applied = (settings.symmetry_position_tolerance, settings.symmetry_moment_tolerance);
+                let draft_id = egui::Id::new(("symmetry_tolerance_draft", structure_id, applied.0.to_bits(), applied.1.to_bits()));
+                let mut draft = ui.ctx().data_mut(|data| data.get_temp::<(f64, f64)>(draft_id)).unwrap_or(applied);
+                egui::Grid::new("symmetry_tolerances").num_columns(2).show(ui, |ui| {
+                    ui.label("Position tolerance (Å)");
+                    ui.add(egui::DragValue::new(&mut draft.0).speed(0.001).range(0.000001..=10.0).max_decimals(6));
                     ui.end_row();
-                    for (output, axis) in ["x", "y", "z"].iter().enumerate() {
-                        ui.label(egui::RichText::new(*axis).strong());
-                        for pair in [0, 3, 5, 4, 2, 1] {
-                            let index = output * 6 + pair;
-                            let expression = &mechanism.expressions[index];
-                            let color = if expression == "0" {
-                                TEXT_SECONDARY
-                            } else {
-                                ACCENT
-                            };
-                            ui.label(egui::RichText::new(expression).size(12.0).color(color))
-                                .on_hover_text(component_label(index));
-                        }
-                        ui.end_row();
-                    }
+                    ui.label("Moment tolerance (μB)");
+                    ui.add(egui::DragValue::new(&mut draft.1).speed(0.001).range(0.000001..=10.0).max_decimals(6));
+                    ui.end_row();
                 });
-            ui.add_space(8.0);
+                ui.ctx().data_mut(|data| data.insert_temp(draft_id, draft));
+                let current_id = (structure_id, applied.0.to_bits(), applied.1.to_bits());
+                let current_task_id = egui::Id::new(("conductivity_analysis", current_id));
+                let current_task = ui.ctx().data_mut(|data| data.get_temp::<ConductivityTask>(current_task_id));
+                let running = current_task.as_ref().is_some_and(|task| {
+                    task.lock().map(|result| result.0.is_none() || result.1.is_none()).unwrap_or(false)
+                });
+                if ui.add_enabled(!running || draft != applied, egui::Button::new("Calculate")).clicked() {
+                    settings.symmetry_position_tolerance = draft.0;
+                    settings.symmetry_moment_tolerance = draft.1;
+                    let analysis_id = (structure_id, draft.0.to_bits(), draft.1.to_bits());
+                    let task_id = egui::Id::new(("conductivity_analysis", analysis_id));
+                    let task: ConductivityTask = Arc::new(Mutex::new((None, None)));
+                    let worker_result = task.clone();
+                    let input = structure.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let with_soc = std::panic::catch_unwind(|| analyze_with_soc_search(&input, draft.0, draft.1))
+                            .unwrap_or_else(|_| Err("analysis failed unexpectedly".to_owned()));
+                        if let Ok(mut result) = worker_result.lock() { result.0 = Some(with_soc); }
+                        ctx.request_repaint();
+                        let without_soc = std::panic::catch_unwind(|| analyze_without_soc(&input, draft.0, draft.1))
+                            .unwrap_or_else(|_| Err("analysis failed unexpectedly".to_owned()));
+                        if let Ok(mut result) = worker_result.lock() { result.1 = Some(without_soc); }
+                        ctx.request_repaint();
+                    });
+                    ui.ctx().data_mut(|data| data.insert_temp(task_id, task));
+                }
+                let position_tolerance = settings.symmetry_position_tolerance;
+                let moment_tolerance = settings.symmetry_moment_tolerance;
+                let analysis_id = (structure_id, position_tolerance.to_bits(), moment_tolerance.to_bits());
+                let task_id = egui::Id::new(("conductivity_analysis", analysis_id));
+                let task = ui.ctx().data_mut(|data| data.get_temp::<ConductivityTask>(task_id));
+                let results = if draft == (position_tolerance, moment_tolerance) {
+                    task.as_ref().and_then(|task| task.lock().ok().map(|value| value.clone()))
+                } else {
+                    ui.label("Press Calculate to apply the new tolerances.");
+                    None
+                };
+                ui.label(egui::RichText::new("With SOC (symmetry from magnetic structure)").strong().color(ACCENT));
+                ui.label(egui::RichText::new("Searches positions and magnetic moments using the tolerances above. Sites without a moment are treated as nonmagnetic.").size(11.0).color(TEXT_SECONDARY));
+                if let Some((with_soc, _)) = &results {
+                    match with_soc {
+                        None => { ui.label("Analyzing…"); },
+                        Some(Err(error)) => { ui.colored_label(WARNING, format!("Cannot analyze: {error}")); },
+                        Some(Ok((linear, mechanisms, count))) => {
+                            ui.label(format!("Magnetic point operations found: {count}"));
+                            ui_conductivity_tensors(ui, "with_soc_search", linear, mechanisms);
+                        }
+                    }
+                }
+                egui::CollapsingHeader::new("With SOC (file magnetic operations)")
+                    .id_salt("file_soc_tensors").default_open(false).show(ui, |ui| {
+                        ui_conductivity_tensors(ui, "with_soc", &analysis.linear, &analysis.mechanisms);
+                    });
+                ui.separator();
+                ui.label(egui::RichText::new("Without SOC (experimental)").strong().color(ACCENT));
+                ui.label(egui::RichText::new("Uses imported magnetic moments; sites without a moment are treated as zero. Mixed occupancy represents an average structure, not an ordered disorder configuration. Spin symmetry is approximate: independently verify scientific results.").size(11.0).color(TEXT_SECONDARY));
+                if let Some((_, without_soc)) = &results {
+                    match without_soc {
+                        None => { ui.label("Analyzing…"); },
+                        Some(Err(error)) => { ui.colored_label(WARNING, format!("Cannot analyze: {error}")); },
+                        Some(Ok((linear, mechanisms, count))) => {
+                            ui.label(format!("Effective point operations: {count}"));
+                            ui_conductivity_tensors(ui, "without_soc", linear, mechanisms);
+                        }
+                    }
                 }
             });
         });
+}
+
+fn ui_conductivity_tensors(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    linear: &LinearConductivityAnalysis,
+    mechanisms: &[MechanismAnalysis; 4],
+) {
+    ui.label(
+        egui::RichText::new("Linear conductivity σ_ij")
+            .strong()
+            .color(ACCENT),
+    );
+    egui::Grid::new((id, "linear"))
+        .num_columns(4)
+        .spacing([10.0, 5.0])
+        .show(ui, |ui| {
+            ui.label("");
+            for axis in ["x", "y", "z"] {
+                ui.label(egui::RichText::new(axis).strong());
+            }
+            ui.end_row();
+            for (row, axis) in ["x", "y", "z"].iter().enumerate() {
+                ui.label(egui::RichText::new(*axis).strong());
+                for column in 0..3 {
+                    let expression = &linear.expressions[row * 3 + column];
+                    let color = if expression == "0" {
+                        TEXT_SECONDARY
+                    } else {
+                        ACCENT
+                    };
+                    ui.label(egui::RichText::new(expression).size(12.0).color(color))
+                        .on_hover_text(format!("σ_{}{}", axis, ["x", "y", "z"][column]));
+                }
+                ui.end_row();
+            }
+        });
+    ui.add_space(13.0);
+    ui.label(
+        egui::RichText::new("Second-order conductivity σ_i;jk")
+            .strong()
+            .color(ACCENT),
+    );
+    for mechanism in mechanisms {
+        ui.label(egui::RichText::new(mechanism.mechanism.label()).strong());
+        egui::Grid::new((id, "tensor", mechanism.mechanism))
+            .num_columns(7)
+            .spacing([7.0, 5.0])
+            .show(ui, |ui| {
+                ui.label("");
+                for suffix in ["xx", "yy", "zz", "yz", "zx", "xy"] {
+                    ui.label(egui::RichText::new(suffix).strong());
+                }
+                ui.end_row();
+                for (output, axis) in ["x", "y", "z"].iter().enumerate() {
+                    ui.label(egui::RichText::new(*axis).strong());
+                    for pair in [0, 3, 5, 4, 2, 1] {
+                        let index = output * 6 + pair;
+                        let expression = &mechanism.expressions[index];
+                        let color = if expression == "0" {
+                            TEXT_SECONDARY
+                        } else {
+                            ACCENT
+                        };
+                        ui.label(egui::RichText::new(expression).size(12.0).color(color))
+                            .on_hover_text(component_label(index));
+                    }
+                    ui.end_row();
+                }
+            });
+        ui.add_space(8.0);
+    }
 }
 
 fn ui_view_tab(

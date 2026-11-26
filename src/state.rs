@@ -807,6 +807,8 @@ impl CellLineStyle {
 #[derive(Resource, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct VisualSettings {
+    pub(crate) symmetry_position_tolerance: f64,
+    pub(crate) symmetry_moment_tolerance: f64,
     pub(crate) supercell: [u32; 3],
     pub(crate) expand_symmetry: bool,
     pub(crate) show_boundary_atoms: bool,
@@ -857,6 +859,8 @@ pub(crate) struct VisualSettings {
 impl Default for VisualSettings {
     fn default() -> Self {
         Self {
+            symmetry_position_tolerance: 0.02,
+            symmetry_moment_tolerance: 0.02,
             supercell: [1, 1, 1],
             expand_symmetry: true,
             show_boundary_atoms: true,

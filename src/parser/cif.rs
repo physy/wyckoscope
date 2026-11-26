@@ -188,7 +188,18 @@ fn parse_block(tokens: &[String]) -> Result<CrystalStructure, ParseError> {
             let fractional = operation.apply(atom.fractional);
             let duplicate = atoms.iter().any(|existing: &AtomSite| {
                 existing.element == atom.element
-                    && periodic_distance(existing.fractional, fractional) < 1.0e-4
+                    && periodic_distance(existing.fractional, fractional)
+                        < if existing.site_id == atom.site_id {
+                            // Four-decimal CIF coordinates such as 0.6667,
+                            // 0.3333 can differ by slightly more than 1e-4
+                            // after applying a symmetry operation to a
+                            // special position. Only enlarge the tolerance
+                            // within one source site; distinct sites retain
+                            // the previous tighter threshold.
+                            2.0e-4
+                        } else {
+                            1.0e-4
+                        }
             });
             if !duplicate {
                 let mut expanded = atom.clone();
@@ -1401,6 +1412,34 @@ Si1 Si 0.1 0.2 0.3
         let structure = parse(text).unwrap();
         assert_eq!(structure.atoms.len(), 2);
         assert_eq!(structure.atoms[0].element, "Si");
+    }
+
+    #[test]
+    fn rounded_special_positions_do_not_create_duplicate_atoms() {
+        let text = r#"
+data_rounded
+_cell_length_a 11.48
+_cell_length_b 11.48
+_cell_length_c 11.93
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 120
+loop_
+_space_group_symop_operation_xyz
+'x,y,z'
+'-y,x-y,z'
+'-x+y,-x,z'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Co1 Co 0.6667 0.3333 0.25
+"#;
+        let structure = parse(text).unwrap();
+        assert_eq!(structure.symmetry_operation_count, 3);
+        assert_eq!(structure.atoms.len(), 1);
     }
 
     #[test]
