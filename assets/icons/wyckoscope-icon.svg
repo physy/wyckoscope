@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 768 768" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Wyckoscope — Trifold</title>
+  <defs>
+    <linearGradient id="blue" x1="237" y1="160" x2="626" y2="452" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#27BFF0"/>
+      <stop offset=".38" stop-color="#2673F8"/>
+      <stop offset="1" stop-color="#2738B5"/>
+    </linearGradient>
+    <linearGradient id="red" x1="237" y1="160" x2="626" y2="452" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFAF8D"/>
+      <stop offset=".38" stop-color="#FF5960"/>
+      <stop offset="1" stop-color="#BF294E"/>
+    </linearGradient>
+    <linearGradient id="green" x1="237" y1="160" x2="626" y2="452" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B4EC83"/>
+      <stop offset=".38" stop-color="#4BCB79"/>
+      <stop offset="1" stop-color="#118477"/>
+    </linearGradient>
+    <linearGradient id="highlight" x1="177" y1="205" x2="450" y2="156" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF" stop-opacity=".62"/>
+      <stop offset="1" stop-color="#FFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="shadow" x1="432" y1="286" x2="514" y2="488" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D1740" stop-opacity=".04"/>
+      <stop offset="1" stop-color="#0D1740" stop-opacity=".36"/>
+    </linearGradient>
+    <path id="ribbon" d="M147 312V265Q147 231 178 192.934155L343 97.671361Q384 74 425 97.671361L611.467875 205.328639Q652.467875 229 652.467875 276.342722V441L510 516 453 318V353Q453 330 431 317L285 232 239 260Z"/>
+    <path id="topFacet" d="M178 192.934155 343 97.671361Q384 74 425 97.671361L449 111.527767 286 178 239 260Z"/>
+    <path id="endFacet" d="M652.467875 292 565 320 612 403 510 463V516L652.467875 441Z"/>
+    <path id="innerFold" d="M389 239 474 287Q510 307 510 350V516L453 418V353Q453 330 431 317L354 272Z"/>
+    <path id="foldEdge" d="M389 239 474 287Q510 307 510 350V503M510 463 612 403"/>
+    <path id="aperture" d="M370.143594 272Q384 264 397.856406 272L474.066642 316Q487.923048 324 487.923048 340V428Q487.923048 444 474.066642 452L397.856406 496Q384 504 370.143594 496L293.933358 452Q280.076952 444 280.076952 428V340Q280.076952 324 293.933358 316Z"/>
+    <mask id="weave" maskUnits="userSpaceOnUse" x="-384" y="-384" width="1536" height="1536">
+      <use href="#ribbon" fill="white"/>
+      <use href="#ribbon" transform="rotate(240 384 384)" fill="black"/>
+      <use href="#aperture" fill="black"/>
+    </mask>
+    <g id="details">
+      <use href="#topFacet" fill="url(#highlight)"/>
+      <use href="#innerFold" fill="url(#shadow)"/>
+      <use href="#endFacet" fill="#DDE3FF" fill-opacity=".64"/>
+      <use href="#foldEdge" stroke="#F1F6FF" stroke-opacity=".48" stroke-width="1.8" stroke-linejoin="round"/>
+    </g>
+  </defs>
+  <g transform="rotate(240 384 384)">
+    <g mask="url(#weave)">
+      <use href="#ribbon" fill="url(#green)"/>
+      <use href="#details"/>
+    </g>
+  </g>
+  <g transform="rotate(120 384 384)">
+    <g mask="url(#weave)">
+      <use href="#ribbon" fill="url(#red)"/>
+      <use href="#details"/>
+    </g>
+  </g>
+  <g mask="url(#weave)">
+    <use href="#ribbon" fill="url(#blue)"/>
+    <use href="#details"/>
+  </g>
+</svg>
